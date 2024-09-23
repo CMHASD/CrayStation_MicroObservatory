@@ -10,9 +10,9 @@ RemoteObserver: The Person Using the CrayStation Micro Observatory\
 
 ## Expectations of the HostUser
 
-- The HostUser does not need any astronomical, IT or electronics knowledge.\
-- The HostUser may be required to press buttons under the guidance of the RemoteAdmin user\
-- The HostUser may be required to read a display on the CrayStation Micro Observatory\
+- The **HostUser** does not need any astronomical, IT or electronics knowledge.\
+- The **HostUser** may be required to press buttons under the guidance of the RemoteAdmin user\
+- The **HostUser** may be required to read a display on the CrayStation Micro Observatory\
 
 ## The Host User Interface
 
