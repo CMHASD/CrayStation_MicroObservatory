@@ -1,5 +1,9 @@
 ### CrayStation_MicroObservatory
 
+## STATUS
+
+This is a work in progress, it has not been tested and is unlikely to work.
+
 ## Concept
 
 Develop a solar powered, micro-observatory requiring no intervention from the host site to operate on a Night by Night Basis. The only requirement for the remote site is a flat surface and a Wifi connection.
