@@ -2,14 +2,14 @@
 
 ## Concept
 
-Develop a solar powered, micro-observatory requiring no intervention from the host site to operate on a Night by Night Basis. The only requirement for the remote site is a flat surface and a Wifi Connection.
+Develop a solar powered, micro-observatory requiring no intervention from the host site to operate on a Night by Night Basis. The only requirement for the remote site is a flat surface and a Wifi connection.
 
 The project will be split into a number of parts, which together will form the CrayStation Micro Observatory.
 
 1.  A powered, opening enclosure, remotely controlled.
 2.  A Seestar S50 smart telescope, remotely controlled.
-3.  an all-sky camera, scripted and remotely controlled.
-4.  weather station, remotely controlled.
+3.  An all-sky camera, scripted and remotely controlled.
+4.  Weather station, remotely controlled.
 5.  Host User Interface, controlled locally, viewable remotly.
 6.  Solar Panel charging and battery charging circuit 
 7.  Security - Authentication and management of remote users, no 'reverse' access into hosts network.
