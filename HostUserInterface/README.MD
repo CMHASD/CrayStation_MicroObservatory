@@ -1,6 +1,7 @@
 # HostUser Interface
 
-The CrayStation Micro Observatory, is designed to work autonomously in a domestic setting, e.g. from the roof of a friend or relatives garage or shed.
+The CrayStation Micro Observatory, is designed to work autonomously in a domestic setting, e.g. from the roof of a friend or relatives garage or shed. The HostUser Interface is their way of interacting with the CrayStation RemoteObservatory.
+The HostUser may also have RemoteObserver access, that role and the usrinterfaces for it are discussed elsewhere.
 
 ## Definitions
 
