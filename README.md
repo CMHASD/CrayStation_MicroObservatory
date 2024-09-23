@@ -30,3 +30,9 @@ These constraints cover the whole project, other constraint may exist for the in
 4.  **Multiple Users** - _The project will be designed for multiple remote users_
 5.  **Unreliable Wifi** - _The project will assume the wifi is unreliable, slow and dynamically sets the IP address._
 6.  **Budget** - _This is meant to be acheivable for a modest budget of under £1000_
+
+## Definitions
+
+**HostUser**:  The friend or relative who will host the CrayStation on their property.\
+**RemoteAdmin**: The Person, remote from the observing site responsible for administration of the CrayStation Micro Observatory\
+**RemoteObserver**: The Person Using the CrayStation Micro Observatory
