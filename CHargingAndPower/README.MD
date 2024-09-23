@@ -1,1 +1,0 @@
-### Charging and Power
