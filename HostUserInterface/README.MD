@@ -4,15 +4,15 @@ The CrayStation Micro Observatory, is designed to work autonomously in a domesti
 
 ## Definitions
 
-HostUser:  The friend or relative who will host the CrayStation on their property.\
-RemoteAdmin: The Person, remote from the observing site responsible for administration of the CrayStation Micro Observatory\
-RemoteObserver: The Person Using the CrayStation Micro Observatory\
+**HostUser**:  The friend or relative who will host the CrayStation on their property.\
+**RemoteAdmin**: The Person, remote from the observing site responsible for administration of the CrayStation Micro Observatory\
+**RemoteObserver**: The Person Using the CrayStation Micro Observatory\
 
 ## Expectations of the HostUser
 
-- The **HostUser** does not need any astronomical, IT or electronics knowledge.\
-- The **HostUser** may be required to press buttons under the guidance of the RemoteAdmin user\
-- The **HostUser** may be required to read a display on the CrayStation Micro Observatory\
+- The HostUser does not need any astronomical, IT or electronics knowledge.\
+- The HostUser may be required to press buttons under the guidance of the RemoteAdmin user\
+- The HostUser may be required to read a display on the CrayStation Micro Observatory\
 
 ## The Host User Interface
 
