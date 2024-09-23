@@ -1,4 +1,4 @@
-# CrayStation_MicroObservatory
+# CrayStation Micro Observatory
 
 ## STATUS
 
