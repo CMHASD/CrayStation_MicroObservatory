@@ -9,19 +9,20 @@ Ideal outcome is we can run every night all year - but we think this might not b
 
 _(this will change as we drill down onto the final design) values are estimates ultimatly we need to measure)_
 
-| Board | Idle (A) | Idle Power Consumption (W) | Tested/Researched |
+| Board | Idle (A) | Power Consumption (W) | Tested/Researched |
 | - | :- | :- | -: |
 | Bare Raspberry Pi 4B | 600mA 5v| 3W | looked up |
+| | 2A (max) 5v |10W | looked up |
 | Pico W (wifi connected) | 50mA 5v|0.25W | looked up |
 | Seestar S50 | 1-1.5A 12v?| 12-18 ? W |Based on battery capacity 6AH and quoted battery life |
+| | 2A @ 5V | 10W | Charge 5V|
+| | 3A @12V | 36W | Rapid Charge 12V |
 
 
 ## SeeStar s50 Battery Notes
 
 - charging stops when the temperature of battery is below 0℃.
 - Seestar S50 supports USB BC1.2 of adapters. Type-C cable which is the normal charging mode, supports 5V 2A; The maximum support is 12V 3A with the fast charge cable which is the fast charging mode.
-- It takes about 4 hours to fully charge in normal charging mode which is 5V 2A.
-- It takes about 2 hours to fully charge in fast charging mode which is 12V 3A.
 - Seestar S50 battery has a rated capacity of 6000mAh, and the battery life verified by ZWO laboratory is about 6 hours.
 - If the dew heater is turned on, the battery life will be significantly shortened.
 - The Seestar S50 comes with a lithium battery capable of over 700 charge and discharge cycles.
