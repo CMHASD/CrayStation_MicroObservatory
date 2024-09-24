@@ -7,7 +7,7 @@ Ideal outcome is we can run every night all year - but we think this might not b
 
 ## Some Stats
 
-_(this will change as we drill down onto the final design) values are estimates ultimatly we need to measure _
+_(this will change as we drill down onto the final design) values are estimates ultimatly we need to measure)_
 
 | Board | Idle (A) | Idle Power Consumption (W) | Tested/Researched |
 | - | :- | :- | -: |
