@@ -13,7 +13,7 @@ _(this will change as we drill down onto the final design) values are estimates 
 | - | :- | :- | -: |
 | Bare Raspberry Pi 4B | 600mA 5v| 3W | looked up |
 | Pico W (wifi connected) | 50mA 5v|0.25W | looked up |
-| Seestar S50 | 1-1.5A 12v| 12-18 W |Based on battery capacity 6AH and quoted battery life |
+| Seestar S50 | 1-1.5A 12v?| 12-18 ? W |Based on battery capacity 6AH and quoted battery life |
 
 
 ## SeeStar s50 Battery Notes
