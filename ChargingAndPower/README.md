@@ -11,8 +11,9 @@ _(this will change as we drill down onto the final design) values are estimates 
 
 | Board | Idle (A) | Idle Power Consumption (W) | Tested/Researched |
 | - | :- | :- | -: |
-| Bare Raspberry Pi 4B | 600mA | 3W | looked up |
-| Pico W (wifi connected) |50mA | | looked up| 0.25W | looked up |
+| Bare Raspberry Pi 4B | 600mA 5v| 3W | looked up |
+| Pico W (wifi connected) | 50mA 5v|0.25W | looked up |
+| Seestar S50 | 1-1.5A 12v| 12-18 W |based on Battery and quoted battery life |
 
 
 
