@@ -16,8 +16,8 @@ _(this will change as we drill down onto the final design) values are estimates 
 | Pico W (wifi connected) | 50mA 5v|0.25W | looked up |
 | Seestar S50 | 1-1.5A v?| ? W |Based on battery capacity 6AH and quoted battery life |
 | | | | Battery Voltage unknown|
-| | 2A @ 5V | 10W | Charge 5V|
-| | 3A @12V | 36W | Rapid Charge 12V |
+| | 2A @ 5V | 10W | Charge 5V (4hours) |
+| | 3A @12V | 36W | Rapid Charge 12V (charge 2 hours)|
 
 
 ## SeeStar s50 Battery Notes
