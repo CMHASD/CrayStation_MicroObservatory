@@ -27,3 +27,11 @@ _(this will change as we drill down onto the final design) values are estimates 
 - If the dew heater is turned on, the battery life will be significantly shortened.
 - The Seestar S50 comes with a lithium battery capable of over 700 charge and discharge cycles.
 - Seestar S50 supports physical buttons to turn on and off. In operation, press and hold the power button for 2s to shut down normally, or for 6s to forc shut down.
+
+## Solar Panel
+
+The solar panel needs to be able to charge the Battery of the SeeStar and the CrayStation Battery, ideally in half a day
+
+## CrayStation Battery
+
+The Cray Station Battery Needs to hold enough charge for a full night observing
