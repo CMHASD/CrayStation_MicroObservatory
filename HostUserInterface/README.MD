@@ -33,6 +33,6 @@ There will also be a number of maintenance buttons for example (this list will c
 
 ## Implementation
 
-The HostUser interface will likely be implemented using an Arduino Nano
+The HostUser interface will likely be implemented using a microcontroller, it will probably be teh same microcontroller used for the weather information.
 
 
