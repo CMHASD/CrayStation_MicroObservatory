@@ -12,12 +12,12 @@ _(this will change as we drill down onto the final design) values are estimates 
 | Board | Idle (A) | Power Consumption (W) | Tested/Researched |
 | - | :- | :- | -: |
 | Bare Raspberry Pi 4B | 600mA 5v| 3W | looked up |
-| | 2A (max) 5v |10W | looked up |
-| Pico W (wifi connected) | 50mA 5v|0.25W | looked up |
-| Seestar S50 | 1-1.5A v?| ? W |Based on battery capacity 6AH and quoted battery life |
-| | | | Battery Voltage unknown|
-| | 2A @ 5V | 10W | Charge 5V (4hours) |
-| | 3A @12V | 36W | Rapid Charge 12V (charge 2 hours)|
+| | 2A (max) 5v |10W | looked up | 
+| Pico W (wifi connected) | 50mA 5v|0.25W | looked up | 
+| Seestar S50 | 1-1.5A v?| ? W |Based on battery capacity 6AH and quoted battery life | 
+| | | | Battery Voltage unknown| 
+| | 2A @ 5V | 10W | Charge 5V (4hours) | 
+| | 3A @12V | 36W | Rapid Charge 12V (charge 2 hours)| 
 
 
 ## SeeStar s50 Battery Notes
@@ -35,4 +35,6 @@ The solar panel needs to be able to charge the Battery of the SeeStar and the Cr
 
 ## CrayStation Battery
 
-The Cray Station Battery Needs to hold enough charge for a full night observing
+The Cray Station Battery Needs to hold enough charge for a full night observing, we will almost certainly use a 12v deep cycle battery as these are easier to charge and monitor, and hold more energy for the money.
+
+e.g. 7AH 12v battery can deliver 84 Watts
