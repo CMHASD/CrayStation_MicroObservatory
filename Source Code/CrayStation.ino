@@ -1,4 +1,4 @@
-#define VERSION "CrayStation V0.251012"
+#define VERSION "CrayStation V0.251014"
 // Started code on 13 Oct 2024.  For Arduino Nano.
 // Added DS3231M RTC module connected to the I2C interface - https://github.com/Zanduino/DS3231M/tree/master
 #pragma region GLOBAL SETTINGS
@@ -195,16 +195,16 @@ void loop() {
     ee.secsStayAwake = 600;
     EEPROM.put(1014, clock);
   }
-
   updateEEPROM();
   powerManagement();
   checkRain();                          // Check if raining - close box if it is
   serviceMotor();                       // Control motor and monitor enclosure switches
   commands();                           // Service Comms from RPi
   checkHandBox();
-  if (millis() > timerButton) {
-    myServo.write(ee.servoHome);       // Return servo arm so releasing telescope power button
-    delay(2000);
+  if (millis() > timerButton && timerButton) {
+    timerButton = 0;
+    myServo.write(ee.servoHome);        // Return servo arm so releasing telescope power button
+    delay(1000);                        // Give it a bit of time to return
     digitalWrite(P_SRV_PWR, LOW);
   }
 }
@@ -236,7 +236,7 @@ void commands(){
     case 'D': dewHeater();              break;  // Turn on/off/get(-1) power to the skycam's dew heater
     case 'Z': soundBuzzer();            break;  // Sound buzzer (& handbox buzzer) for a given period
 
-    case '#': checkHandBox();           break;  // Sees if the handbox is connected
+    case '#': checkHandBox();           break;  // Sees if the handbox is connected, and if Nano will be powering off the RPi
     case 'k': getKey();                 break;  // Returns pressed key info on handbox
     case '[': printText();              break;  // Sent a string of text to the HandBox display
     case '@': setCursor();              break;  // Set coordinates of the Handbox display's cursor
@@ -249,22 +249,22 @@ void commands(){
     case '~': stillActive();            break;  // RPi will still keep sending this command
     case 'z': goToSleep();              break;  // Does RPi need to go to sleep? (E.g. low battery)
     case 'G': goodNight();              break;  // Cut power to RPi in 1 minute
-    case 'T': setClock();               break;  // Set Arduino's clock and RTC
-    case 'A': getArdTime();             break;
-    case 'R': getRTCtime();             break;
+    case 'T': setClock();               break;  // Set Arduino's clock and RTC YYYY/MM/DD HH:MM:SS
+    case 'A': getArdTime();             break;  // GEt Arduino clock's time and date
+    case 'R': getRTCtime();             break;  // Get RTC's time and date
     case 'p': powerOffTimer();          break;  // Time left in seconds before RPi is turned (don't extend timerPowerOff)
 
-    case 'r': checkRain();              break;
-    case 't': getTemperature();         break;
-    case 'h': getHumidity();            break;
-    case 'b': getBarometer();           break;
+    case 'r': checkRain();              break;  // Is the sensor indicating that it is raining?
+    case 'F': ignoreRain = true;        break;  // Ignore rain sensor so that the lid can be opened and closed even if raining
+    case 'f': ignoreRain = false;       break;  // Start recognising rain sensor
+    case 't': getTemperature();         break;  // Get the BME280 sensor's temperature in Celsius
+    case 'h': getHumidity();            break;  // Get the BME280 sensor's hygrometer reading as a %age
+    case 'b': getBarometer();           break;  // Get the BME280 sensor's air pressure in mb
     
-    case 'v': getBatteryVolts();        break;
-    case 'u': getSolarVolts();          break;
+    case 'v': getBatteryVolts();        break;  // Get the battery's voltage
+    case 'u': getSolarVolts();          break;  // Get the solar panel's voltage
     case 'a': getAmps();                break;  // 12V battery amps currently being consumed
 
-    case 'F': ignoreRain = true;        break;
-    case 'f': ignoreRain = false;       break;
     case 'e': ee.reset = 255;           break;  // Resets the EERPOM contents in the Loop function above
     case 'i': getVersion();             break;
     case 'S': simulate();               break;  // Simulate certain attached devices
@@ -276,6 +276,11 @@ void commands(){
     default:    c = '?';                break;  // Unknown command
   }
   if (c != '\0') Serial.println(c);
+}
+//-------------------------------------------------------------------------------------------------
+void restart() {
+  EEPROM.put(1014, clock);                      // Save Arduino clock's settings so that it can be resurrected later
+  asm volatile("jmp 0");
 }
 //-------------------------------------------------------------------------------------------------
 void updateEEPROM() {
@@ -322,16 +327,14 @@ void simulate() {                             // sx
 //=================================================================================================
 void powerManagement() {
   serviceRPiTimers();
-  switch (batteryGood()) {
+  switch (batteryStatus()) {
     case LEVEL_BLACK:
       if (battLevel == LEVEL_BLACK) return;
-      battLevel = LEVEL_BLACK;
-      timerBattCharging = ardClock + 600;
       digitalWrite(P_CAM_HTR, LOW);                               // Turn off unnecessary devices   
       digitalWrite(P_TEL_PWR, LOW);
       digitalWrite(P_LED, LOW);
       poweringDown = true;                                        // Power off the RPI in 60 secs to hopefully
-      timerPowerOff = ardClock + 60;                              // allow time for the RPi to close gracefully
+      timerPowerOff = ardClock + 60;                              // allowing time for the RPi to close gracefully
       handboxChargingStatus();
       closeLid();
       unsigned long beepTimer = millis();
@@ -343,8 +346,6 @@ void powerManagement() {
 
     case LEVEL_RED:
       if (battLevel < LEVEL_RED) return;
-      battLevel = LEVEL_RED;
-      timerBattCharging = ardClock + 600;
       digitalWrite(P_CAM_HTR, LOW);                               // Switch off unnecessary devices
       digitalWrite(P_TEL_PWR, LOW);
       digitalWrite(P_LED, LOW);
@@ -354,13 +355,10 @@ void powerManagement() {
 
     case LEVEL_AMBER:
       if (battLevel < LEVEL_AMBER) return;
-      battLevel = LEVEL_AMBER;
-      timerBattCharging = ardClock + 600;
       if (ardClock > timerPowerOff) {                             // Time to sleep?
         digitalWrite(P_CAM_HTR, LOW);                             // Put devices to sleep
         digitalWrite(P_TEL_PWR, LOW);
         digitalWrite(P_LED, LOW);
-        closeLid();
         secsPastHour = 3600;
       }
       break;
@@ -372,28 +370,20 @@ void powerManagement() {
         secsPastHour = 1800;
       break;
   }
-}
+} 
 //-------------------------------------------------------------------------------------------------
-byte batteryGood() {
+byte batteryStatus() {
+  byte currLevel = LEVEL_BLACK;
   float v = measureVolts(BATT_V, SCALE_BATT, 20);
 
-  if (v < BATT_RED) {
-    battLevel = LEVEL_BLACK;
-  }
+  if (v >= BATT_RED)   currLevel = LEVEL_RED;
+  if (v >= BATT_AMBER) currLevel = LEVEL_AMBER;
+  if (v >= BATT_GREEN) currLevel = LEVEL_GREEN;
 
-  if (battLevel <  BATT_RED && v >= BATT_RED) {
-    if (ardClock > timerBattCharging) battLevel = LEVEL_RED;
-  }
-
-  if (battLevel <  BATT_AMBER && v >= BATT_AMBER) {
-    if (ardClock > timerBattCharging) battLevel = LEVEL_AMBER;
-  }
-
-  if (battLevel <  BATT_GREEN && v >= BATT_GREEN) {
-    if (ardClock > timerBattCharging) battLevel = LEVEL_GREEN;
-  }
-
-  timerBattCharging = ardClock + 6000;
+  if (currLevel < battLevel || ardClock > timerBattCharging) {
+    battLevel = currLevel;
+    timerBattCharging = ardClock + 600;
+  } 
   return battLevel;
 }
 //-------------------------------------------------------------------------------------------------
@@ -404,7 +394,7 @@ void leds(){                                // L
       digitalWrite(P_LED, LOW);
       break;
     case '1':
-      if (batteryGood()) {
+      if (batteryStatus()) {
         digitalWrite(P_LED, HIGH);
         c = '%';
       }
@@ -419,7 +409,7 @@ void leds(){                                // L
 void dewHeater(){                           // Dx
   int value = Serial.parseInt();
   if (value >= 0 || value <= 100) {
-      if (batteryGood() < LEVEL_GREEN) value = 0;
+      if (batteryStatus() < LEVEL_GREEN) value = 0;
       analogWrite(P_CAM_HTR, heater = (value * 255) / 100);
   }
   Serial.println(value);
@@ -529,14 +519,19 @@ int getAngle(int angle){
 void serviceRPiTimers() {
   if (ardClock > timerPowerOn && ardClock < timerPowerOff) {
     digitalWrite(P_RPI_PWR, HIGH);                                  // Good morning RPi
+    setRPiTimers();
   }
   if (ardClock > timerPowerOff) {
     digitalWrite(P_RPI_PWR, LOW);                                   // Good night RPi
     digitalWrite(P_LED, LOW);
-    digitalWrite(P_CAM_HTR, LOW);                                   // Should this be done?
+    digitalWrite(P_CAM_HTR, LOW);                                   // (Should this be done?)
+    setRPiTimers();
+  }
+}
+// ------------------------------------------------------------------------------------------------
+void setRPiTimers() {
     timerPowerOn  = (unsigned long)(ardClock / secsPastHour) * secsPastHour + secsPastHour; 
     timerPowerOff = timerPowerOn + ee.secsStayAwake;
-  }
 }
 // ------------------------------------------------------------------------------------------------
 void setCloseTimer() {
@@ -563,7 +558,7 @@ void goToSleep() {
 //-------------------------------------------------------------------------------------------------
 void goodNight() {
   c = '\0';
-  if (batteryGood() == LEVEL_BLACK && !poweringDown) {
+  if (batteryStatus() == LEVEL_BLACK && !poweringDown) {
     timerPowerOff = ardClock + 60;
     poweringDown = true;
     Serial.print('0');                                  // Print an extra leading 0 - the RPi WILL be powered off
@@ -649,24 +644,31 @@ bool syncToRTC() {
 }
 //-------------------------------------------------------------------------------------------------
 void handBoxUTC () {
-  if (handBoxInUse > 2) {
+  if (handBoxInUse > 2) { // Wait a bit before starting to show UTC time
     handBoxInUse--;
     return;
   }
+  memcpy(disp0, "Waiting for RPi ", 16);
   sprintf(disp1, " UTC: %02d:%02d:%02d  ", clock.hr, clock.min, clock.sec);
-  lcd.setCursor(0, 1);
-  for (byte i = 0; i <= 15; i++) lcd.write(disp1[i]);
+  printLCDbuffer();
 }
 //-------------------------------------------------------------------------------------------------
 void tickTock(){
-  if (tick < 1000 && millis() > 0x7fffffff) return;   // Account for the ~49 day millis() overflow back to 0.
+  if (tick < 1000 && millis() > 0x7fffffff) return;         // Account for the ~49 day millis() overflow back to 0.
   if (millis() < tick) return;
-  ardClock ++;
+  ardClock += (millis() - tick) / 1000 + 1;
   clock.sec += (millis() - tick) / 1000 + 1;
   tick += 1000;
-  handBoxUTC();
+  handBoxUTC();                                             // Display UTC on HandBox LCD.
   if (clock.sec < 60) return;
-  if (syncToRTC()) return;                            // If RTC is working, sync to it.
+  if (syncToRTC()) return;                                  // If RTC is working, sync to it.
+  if (measureVolts(BATT_V, SCALE_BATT, 20) < LEVEL_BLACK) { // Battery is in dire straits.
+    beep(50);                                               // Cry for help
+    delay(100);
+    beep(50);
+    delay(100);
+    beep(50);
+  }
 
   while (clock.sec > 59) {
     clock.sec -= 60;
@@ -889,8 +891,8 @@ bool checkHandBox() {
   //c = '1';                                          // ***REMOVE WHEN GOING LIVE***
   //return handBoxHere = true;                        // ***REMOVE WHEN GOING LIVE***
 
-  if (handBoxHere) timerHandBox = millis() + 600000;  // Disconneciton timer
-  else if (millis() > timerHandBox) timerHandBox = 0; // If disconnect for more than 5 mins the handbox is reset
+  if (handBoxHere) timerHandBox = ardClock+ 300;      // Update disconnection timer (5 mins)
+  else if (ardClock > timerHandBox) timerHandBox = 0; // If disconnect for more than 5 mins the handbox is reset
 
   if (digitalRead(P_HBX_CXN) == handBoxHere) {        // Connection status changed?
     handBoxHere = false;                              // Assume connection is lost
@@ -903,23 +905,23 @@ bool checkHandBox() {
     }
   }
   c = handBoxHere + '0';
+  c += poweringDown * 2;
   return handBoxHere;
 }
 //-------------------------------------------------------------------------------------------------
 void connectHandBox(){
-  if (digitalRead(P_HBX_CXN)) return;
+  disp0[16] = disp1[16] = '\0';
+  if (digitalRead(P_HBX_CXN)) return;           // Return if not connected
   if (!timerHandBox) {
-    handBoxInUse = 10;
+    handBoxInUse = 10;                          // Display start-up screen for 10 seconds
     lcdBacklight = true;
     lcdDisplay = true;
     lcdBlink = false;
     lcdCursor = false;
     memcpy(disp0, "  CrayStation   ", 16);
     memcpy(disp1, "(c) 2025 CMHASD ", 16);  
-    disp0[16] = disp1[16] = '\0';
   }
-  lcd.init();
-  lcd.clear();
+  lcd.begin(LCD_WIDTH, LCD_HEIGHT);
 
   if (handBox.begin(0x20, &Wire)) {
     handBox.pinMode(E_KEY_U,      INPUT_PULLUP);
@@ -935,19 +937,55 @@ void connectHandBox(){
     memcpy(disp1, "*Keypad error  *", 16);
   }
 
-  lcd.clear();
-  for (byte i = 0; i <-7; i++) lcd.createChar(i, udgs[i]);
-  for (byte i = 0; i <= 15; i++) lcd.write(disp0[i]);
-  lcd.setCursor(0, 1);
-  for (byte i = 0; i <= 15; i++) lcd.write(disp1[i]);
+  // Power up the RPi if it is not already on
+  if (battLevel > LEVEL_BLACK) {
+    digitalWrite(P_RPI_PWR, HIGH);
+    poweringDown = false;
+    setRPiTimers();
+  }
+  else handboxChargingStatus();
+
+  // Set-up display controls as required
+  for (byte i = 0; i <-7; i++) lcd.createChar(i, udgs[i]);  // Redefine UDGs
+  printLCDbuffer();
   lcdBacklight  ? lcd.backlight() : lcd.noBacklight();
   lcdDisplay    ? lcd.display()   : lcd.noDisplay();
   lcdBlink      ? lcd.blink()     : lcd.noBlink();
   lcdCursor     ? lcd.cursor()    : lcd.noCursor();
   lcd.setCursor(x, y);
+
+  // Inform user that connection has been acknowledged
   beep(100);
   delay(100);
   beep(100);
+}
+//-------------------------------------------------------------------------------------------------
+void handboxChargingStatus(){
+  if (checkHandBox()) {
+    float v = measureVolts(BATT_V, SCALE_BATT, 20);
+    int percent = int((v - 11.37) / 0.013556);
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+
+    lcd.noBacklight();
+    lcdBacklight = false;
+    memcpy(disp0, "BATTERY CRITICAL", 16);
+    sprintf(disp1, "Batt: %02.1fV %02d%% ", v, percent);
+    printLCDbuffer();
+  }
+}
+//-------------------------------------------------------------------------------------------------
+void printLCDbuffer() {
+  lcd.home();
+  lcd.print(disp0);
+  lcd.setCursor(0, 1);
+  lcd.print(disp1);
+  lcd.setCursor(x, y);
+
+//  for (byte i = 0; i <= 15; i++) lcd.write(disp0[i]);
+//  lcd.setCursor(0, 1);
+//  for (byte i = 0; i <= 15; i++) lcd.write(disp1[i]);
+//  lcd.setCursor(x, y);
 }
 //-------------------------------------------------------------------------------------------------
 void printText(){
@@ -1180,24 +1218,6 @@ void getPassword() {
   Serial.println(pwd);
 }
 //-------------------------------------------------------------------------------------------------
-void handboxChargingStatus(){
-  if (checkHandBox()) {
-    float v = measureVolts(BATT_V, SCALE_BATT, 20);
-    lcd.noBacklight();
-    lcd.setCursor(0, 0);
-    lcd.print("BATTERY CRITICAL");
-    lcd.setCursor(0, 0);
-    lcd.print("Chging:");
-    lcd.print(v, 1);
-    lcd.print("V ");
-    v = int((v - 11.37) / 0.013556); // (12.73-11.51/90) = 0.013556, 11.51 (10%) - 10x0.013556 = 11.37 (0%)
-    if (v > 100) v = 100;
-    if (v < 0) v = 0;
-      lcd.print(v);
-      lcd.print("% ");
-    }
-}
-//-------------------------------------------------------------------------------------------------
 void soundBuzzer() {
   int b = Serial.parseInt();
   if (b > 0) beep(b);
@@ -1214,9 +1234,9 @@ void beep(int b){
 }
 //=================================================================================================
 #pragma endregion
-#pragma region DIRECT ACCESS
+#pragma region INFORMATION
 //=================================================================================================
-// DIRECT ACCESS
+// INFORMATION
 //=================================================================================================
 void systemStatus(){
   Serial.println(F("\nARDUINO"));
@@ -1323,7 +1343,7 @@ void systemStatus(){
     }
     Serial.print(' ');
     for (byte j = 0; j < 16; j++) {
-      a = EEPROM.read(i+j);
+      a = EEPROM.read(i + j);
       if (a >= 32 && a <= 127) Serial.print(a);
       else Serial.print('.');
     }
@@ -1334,16 +1354,6 @@ void systemStatus(){
   c='\0';
 }
 //-------------------------------------------------------------------------------------------------
-void restart() {
-  EEPROM.put(1014, clock);
-  asm volatile("jmp 0");
-}
-//=================================================================================================
-#pragma endregion
-#pragma region INFORMATION
-//=================================================================================================
-// INFORMATION
-//=================================================================================================
 void getVersion(){
   Serial.println(VERSION);
   c = '\0';
