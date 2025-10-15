@@ -1,4 +1,4 @@
-#define VERSION "CrayStation V0.251014"
+#define VERSION "CrayStation V0.251015"
 // Started code on 13 Oct 2024.  For Arduino Nano.
 // Added DS3231M RTC module connected to the I2C interface - https://github.com/Zanduino/DS3231M/tree/master
 #pragma region GLOBAL SETTINGS
@@ -71,7 +71,7 @@ unsigned long timerPowerOn = 0;           // For RPi power
 unsigned long timerCloseLid = 0;          // Timer for when lid must close
 unsigned long tick =0;                    // Increments once a second - for timing functions
 unsigned long timerHandBox = 0;           // Timer for before resetting handbox when disconnected
-unsigned long timerButton = 0;            // Timer for pressing the telescope's on/off button
+unsigned long timerServo = 0;             // Timer for pressing the telescope's on/off button
 unsigned long timerBattCharging = 0;      // Timer for charging battery
 unsigned long ardClock = -1;              // Clock which increments once a second (rolls over after 136 years!)
 long secsPastHour = 3600;                 // RPi power timer settings
@@ -96,6 +96,7 @@ bool gettingPwd = false;                  // Indicates whether HandBox is gettin
 byte handBoxInUse = 10;                   // If RPi is not using the RPi then HandBox displays the clock
 
 bool chargingScope = false;               // Telescope charging status
+bool servoReturning = false;              // If true, the servo has been set in motion
 bool poweringDown = false;                // RPi is powering down, because it said it is or if the battery is at critical level
 bool ignoreRain = false;                  // For Superuser use.  Making this true allows roof to be opened regardless of the weather
 bool simulateMode = false;
@@ -129,12 +130,10 @@ void setup() {
   // Intialise Settings & Clock
   int addr;
   EEPROM.get(0, addr);
-  //EEPROM.get(addr, ee);
-  //updateEEPROM();
-  //EEPROM.put(1014, clock);
+  if (addr > 1022) addr = 2;
+  EEPROM.get(addr, ee);
   EEPROM.get(1014, clock);
-  if (!RTC.begin()) Serial.println("DM3231M RTC clock not responding");
-  else syncToRTC();
+  syncToRTC();
   setArdClock();
 
   // Intialise pins
@@ -186,11 +185,10 @@ void loop() {
 
   if (ee.reset == 255) {
     // Reset EEPROM with default values if ee.reset is not 0
-    for (int i = 2; i <= 1023; i++) EEPROM.put(i, 255);
+    for (int i = 2; i < 1014; i++) EEPROM.put(i, 255);
     ee.reset = 0;
     ee.servoHome = 90;
     ee.servoPush = 147;
-    ee.pulsePeriod = 600;
     ee.lidTimeOut = 10000;
     ee.secsStayAwake = 600;
     EEPROM.put(1014, clock);
@@ -201,12 +199,7 @@ void loop() {
   serviceMotor();                       // Control motor and monitor enclosure switches
   commands();                           // Service Comms from RPi
   checkHandBox();
-  if (millis() > timerButton && timerButton) {
-    timerButton = 0;
-    myServo.write(ee.servoHome);        // Return servo arm so releasing telescope power button
-    delay(1000);                        // Give it a bit of time to return
-    digitalWrite(P_SRV_PWR, LOW);
-  }
+  serviceServo();
 }
 //=================================================================================================
 #pragma endregion
@@ -229,8 +222,8 @@ void commands(){
 
     case 'B': telescopeButton();        break;  // Press telescope's on/off button for supplied ms
     case '/': setPushAngle();           break;  // Set/retrieve servo's arm's action angle
-    case '_': setHomeAngle();           break;  // Set/retrieve servo's arm's home angle
-    case 'E': chargeScope();            break;  // Turn on/off/get(-1) power for charging scope
+    case '|': setHomeAngle();           break;  // Set/retrieve servo's arm's home angle
+    case '^': chargeScope();            break;  // Turn on/off/get(-1) power for charging scope
 
     case 'L': leds();                   break;  // Turn on/off/get power to the LEDs
     case 'D': dewHeater();              break;  // Turn on/off/get(-1) power to the skycam's dew heater
@@ -241,18 +234,17 @@ void commands(){
     case '[': printText();              break;  // Sent a string of text to the HandBox display
     case '@': setCursor();              break;  // Set coordinates of the Handbox display's cursor
     case '$': escapeCodes();            break;  // Set HandBox diplay's settings
-    case 'N': enterPassword();          break;  // Get HandBox to get a WiFi password from the user
-    case 'n': getPassword();            break;  // Returns the password supplied by the user
+    case 'E': enterPassword();          break;  // Get HandBox to get a WiFi password from the user
+    case 'P': getPassword();            break;  // Returns the password supplied by the user
     case 'g': c = '0' + gettingPwd;     break;  // See if a password is being got by the handbox
 
-    case 'P': setPulsePeriod();         break;  // How long to wait for comms from the 
     case '~': stillActive();            break;  // RPi will still keep sending this command
     case 'z': goToSleep();              break;  // Does RPi need to go to sleep? (E.g. low battery)
     case 'G': goodNight();              break;  // Cut power to RPi in 1 minute
     case 'T': setClock();               break;  // Set Arduino's clock and RTC YYYY/MM/DD HH:MM:SS
     case 'A': getArdTime();             break;  // GEt Arduino clock's time and date
     case 'R': getRTCtime();             break;  // Get RTC's time and date
-    case 'p': powerOffTimer();          break;  // Time left in seconds before RPi is turned (don't extend timerPowerOff)
+    case 'p': powerOffTimer();          break;  // Time left in seconds before RPi is turned off (don't extend timerPowerOff)
 
     case 'r': checkRain();              break;  // Is the sensor indicating that it is raining?
     case 'F': ignoreRain = true;        break;  // Ignore rain sensor so that the lid can be opened and closed even if raining
@@ -266,58 +258,16 @@ void commands(){
     case 'a': getAmps();                break;  // 12V battery amps currently being consumed
 
     case 'e': ee.reset = 255;           break;  // Resets the EERPOM contents in the Loop function above
-    case 'i': getVersion();             break;
+    case 'i': getVersion();             break;  // Get version of this code
     case 'S': simulate();               break;  // Simulate certain attached devices
     case '*': restart();                break;  // Restart the Arduino
-    case 's': systemStatus();           break;
+    case 's': systemStatus();           break;  // Full diagnostic report
     case '?': help();                   break;  // Summary of commands available to the RPi or user
     case '\n':  c = '\0';               break;
     case '\r':  c = '\0';               break;
     default:    c = '?';                break;  // Unknown command
   }
   if (c != '\0') Serial.println(c);
-}
-//-------------------------------------------------------------------------------------------------
-void restart() {
-  EEPROM.put(1014, clock);                      // Save Arduino clock's settings so that it can be resurrected later
-  asm volatile("jmp 0");
-}
-//-------------------------------------------------------------------------------------------------
-void updateEEPROM() {
-  long addr;
-  struct eeprom xx;
-
-  EEPROM.get(0, addr);
-  if(addr > 65535 || addr == 0) addr = 2;
-  EEPROM.get(addr, xx);
-  while (addr < 990) {
-    if((ee.reset != xx.reset) || (ee.servoHome != xx.servoHome) || (ee.servoPush != xx.servoPush) ||
-        (ee.pulsePeriod != xx.pulsePeriod) || (ee.lidTimeOut != xx.lidTimeOut)) {
-      EEPROM.put(0, addr);
-      EEPROM.put(addr, ee);
-      EEPROM.get(addr, xx);
-      addr++;
-    } 
-    else break;
-  }                               // 256 - (10 + 22)
-}
-//-------------------------------------------------------------------------------------------------
-void simulate() {                             // sx
-  delay(10);
-  switch(Serial.read()) {
-    case '0':
-      simulateMode = false;
-      c = '0';
-      break;
-    case '1':
-      simulateMode = true;
-      c = '1';
-      break;
-    case -1:
-      c = '%';
-      break;
-  }
-  return;
 }
 //=================================================================================================
 #pragma endregion
@@ -478,9 +428,24 @@ void telescopeButton(){                     // Bx (x is in  ms)
   if (pressTime > 1){
     digitalWrite(P_SRV_PWR, HIGH);          // Power up the servo
     myServo.write(ee.servoPush);            // Press the power button
-    timerButton = millis() + pressTime;
+    timerServo = millis() + pressTime;
   }
   else c ='%';                              // Unable to carry out operation
+}
+//-------------------------------------------------------------------------------------------------
+void serviceServo() {
+  if (timerServo && millis() > timerServo) {// Test to see if timerServo was set and has expired
+    if (servoReturning) {
+      timerServo = 0;                       // If servo was returning the reset timer
+      digitalWrite(P_SRV_PWR, LOW);         // and cut power to the servo.
+      servoReturning = false;               // Servo is no longer moving
+    }
+    else {
+      myServo.write(ee.servoHome);          // Tell servo to return to home position so releasing scope's power button
+      servoReturning = true;                // Servo arm is moving
+      timerServo = millis() + 1000;         // Allow 1000ms for the servo arm to return before powering off 
+    }
+  }
 }
 //-------------------------------------------------------------------------------------------------
 void chargeScope(){                         // Ex (no parameter given returns current state)
@@ -502,7 +467,7 @@ void setPushAngle(){                        // /
   ee.servoPush = getAngle(ee.servoPush);    // Set servo angle for pressing the scope's on/off button
 }
 //-------------------------------------------------------------------------------------------------
-void setHomeAngle(){                        /* \ */
+void setHomeAngle(){                        /* | */
   ee.servoHome = getAngle(ee.servoHome);    // Set servo angle for home position, i.e. not pressing the button
 }
 //-------------------------------------------------------------------------------------------------
@@ -515,6 +480,8 @@ int getAngle(int angle){
 //=================================================================================================
 #pragma endregion
 #pragma region CLOCKS AND TIMERS
+//=================================================================================================
+// CLOCKS AND TIMERS
 //=================================================================================================
 void serviceRPiTimers() {
   if (ardClock > timerPowerOn && ardClock < timerPowerOff) {
@@ -540,15 +507,9 @@ void setCloseTimer() {
   Serial.println(timerCloseLid);
 }
 //-------------------------------------------------------------------------------------------------
-void setPulsePeriod(){                      // ~
-  if (unsigned long val = Serial.parseInt() > 0) ee.pulsePeriod = val;
-  c = '\0';
-  Serial.println(ee.pulsePeriod);
-}
-//-------------------------------------------------------------------------------------------------
 void stillActive() {                        // ~
-  if (!poweringDown) timerPowerOff = ardClock + ee.secsStayAwake;  // RPi says it wants to stay awake - postpone time to turn off
-  else c = '%';
+  if (!poweringDown) timerPowerOff = ardClock + ee.secsStayAwake; // RPi says it wants to stay awake - postpone time to turn off
+  else c = '%';                                                   // Return error code if already powering down
 }
 //-------------------------------------------------------------------------------------------------
 void goToSleep() {
@@ -765,7 +726,7 @@ void closeLid(){
 }
 //-------------------------------------------------------------------------------------------------
 void getMotorStatus(){
-  if (checkTImedOut()) Serial.print('T');              // 'T' means timed out (return "Tc" or "To")
+  if (checkTimedOut()) Serial.print('T');              // 'T' means timed out (return "Tc" or "To")
   if (pwm > 0) c = dir ? 'C' : 'O';                   // If motor is moving then 'C' means closing and 'O' is opening.
 
   if (getOpenSw()) {
@@ -777,18 +738,18 @@ void getMotorStatus(){
 }
 //-------------------------------------------------------------------------------------------------
 bool getOpenSw() {
-  checkTImedOut();
+  checkTimedOut();
   if (simulateMode) return sim_OpSw;
   return !digitalRead(P_OP_SW);
 }
 //-------------------------------------------------------------------------------------------------
 bool getCloseSw() {
-  checkTImedOut();
+  checkTimedOut();
   if (simulateMode) return sim_ClSw;
   return !digitalRead(P_CL_SW);
 }
 //-------------------------------------------------------------------------------------------------
-bool checkTImedOut() {
+bool checkTimedOut() {
   if (millis() < timerLid) return false;
   stopMotor();
   return true;
@@ -800,7 +761,7 @@ void serviceMotor(){
     closeLid();
     return;
   }
-  if (checkTImedOut()) return;
+  if (checkTimedOut()) return;
   digitalWrite(P_MTR_PWM, dir);
   if (pwm) {
     if (dir) {
@@ -827,7 +788,7 @@ void serviceMotor(){
   if (!simulateMode) analogWrite(P_MTR_PWM, pwm);
 }
 //-------------------------------------------------------------------------------------------------
-void setMotorTimeOut(){                          // =x
+void setMotorTimeOut(){                          // Mx
   delay(20);                                // Wait a little for next character
   switch (Serial.peek()) {
     case '\r':                              // No parameter given so the current servoAnlge will be return
@@ -1234,9 +1195,9 @@ void beep(int b){
 }
 //=================================================================================================
 #pragma endregion
-#pragma region INFORMATION
+#pragma region MISCELLANEOUS
 //=================================================================================================
-// INFORMATION
+// MISCELLANEOUS
 //=================================================================================================
 void systemStatus(){
   Serial.println(F("\nARDUINO"));
@@ -1300,7 +1261,7 @@ void systemStatus(){
         if (i == 7) i+= 2;
       }
     } else Serial.println(F("No PCF2875"));
-  } else Serial.println(F("Not connected"));
+  } else Serial.println(F("No HandBox"));
   Serial.println(F("\nMODULES"));
   if (bme.begin(0x76)) {
     Serial.print(F("Temp"));
@@ -1354,11 +1315,54 @@ void systemStatus(){
   c='\0';
 }
 //-------------------------------------------------------------------------------------------------
+void restart() {
+  EEPROM.put(1014, clock);                      // Save Arduino clock's settings so that it can be resurrected later
+  asm volatile("jmp 0");
+}
+//-------------------------------------------------------------------------------------------------
+void updateEEPROM() {
+  int addr;
+  struct eeprom xx;
+
+  EEPROM.get(0, addr);
+  if(addr > 1022 || addr == 0) addr = 2;
+
+  EEPROM.get(addr, xx);
+  while (addr < 990) {
+    // Check to see if any settings have changed
+    if( (ee.reset != xx.reset) || (ee.servoHome != xx.servoHome) || 
+        (ee.servoPush != xx.servoPush) || (ee.lidTimeOut != xx.lidTimeOut)) {
+      EEPROM.put(addr, ee);                             // Update EEPROM setting
+      EEPROM.get(addr, xx);                             // Read it in to verify was written successfully
+      EEPROM.put(addr, ee);
+      addr++;                                           // Move to next address if couldn't write to last
+    } 
+    else break;
+  }
+}
+//-------------------------------------------------------------------------------------------------
 void getVersion(){
   Serial.println(VERSION);
   c = '\0';
 }
 //-------------------------------------------------------------------------------------------------
+void simulate() {                             // sx
+  delay(10);
+  switch(Serial.read()) {
+    case '0':
+      simulateMode = false;
+      c = '0';
+      break;
+    case '1':
+      simulateMode = true;
+      c = '1';
+      break;
+    case -1:
+      c = '%';
+      break;
+  }
+  return;
+}//-------------------------------------------------------------------------------------------------
 void help(){
   /*Serial.println(VERSION);
   Serial.println(F("\nMOTOR\n====="));
