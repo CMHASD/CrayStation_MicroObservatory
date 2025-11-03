@@ -1,4 +1,4 @@
-#define VERSION "CMHASD V0.251102"
+#define VERSION "CMHASD V0.251103"
 // Started code on 13 Oct 2024.  For Arduino Nano.
 #pragma region GLOBAL SETTINGS
 #include <Servo.h>
@@ -147,12 +147,6 @@ void setup() {
   digitalWrite(P_TEL_PWR,   LOW);
   digitalWrite(P_RPI_PWR,   HIGH);              // Power-up the Raspberry Pi
 
-  // Serial port
-  Serial.begin(115200);
-  Serial.setTimeout(50);
-  Serial.println("\nInitialising...");
-  beep(50);
-
   // Intialise Settings & Clock
   int addr;
   EEPROM.get(0, addr);                          // Get EEPROM address where settings are held
@@ -162,12 +156,25 @@ void setup() {
   syncToRTC();
   setArdClock();
 
+  // Serial port
+  Serial.begin(115200);
+  Serial.setTimeout(50);
+  Serial.println("\nInitialising...");
+
+  beep(20);
+  delay(20);
+  beep(20);
+  delay(20);
+  beep(20);
+  delay(100);
+  beep(100);
+
  // Initialise handbox
   checkHandBox();
 
   // Lid limit switches interrupts
-  attachInterrupt(digitalPinToInterrupt(P_OP_SW), stopMotor, LOW);
-  attachInterrupt(digitalPinToInterrupt(P_CL_SW), stopMotor, LOW);
+  //attachInterrupt(digitalPinToInterrupt(P_OP_SW), stopMotor, LOW);
+  //attachInterrupt(digitalPinToInterrupt(P_CL_SW), stopMotor, LOW);
 
   // Initialise telescope power button servo
   myServo.attach(P_SRV_SIG);
@@ -177,7 +184,7 @@ void setup() {
 }
 //=================================================================================================
 void loop() {
-  tickTock();
+  tickTock();                           // Update clocks
 
   if (ee.reset == 255) {
     // Reset EEPROM with default values if ee.reset is not 0
@@ -206,6 +213,7 @@ void loop() {
 void commands(){
   if (!Serial.available()) return;              // Return if nothing received
   c = Serial.read();
+  beep(1);
 
   switch (c){
     case 'O': openLid();                break;
@@ -242,7 +250,7 @@ void commands(){
     case 'R': getRTCtime();             break;  // Get RTC's time and date
     case 'p': powerOffTimer();          break;  // Time left in seconds before RPi is turned off (don't extend timerPowerOff)
 
-    case 'r': checkRain();              break;  // Is the sensor indicating that it is raining?
+    case 'r': checkRain();              break;  // Is the sensor indicating that it is raining? '1' = yes, '0' = no
     case 'F': ignoreRain = true;        break;  // Ignore rain sensor so that the lid can be opened and closed even if raining
     case 'f': ignoreRain = false;       break;  // Start recognising rain sensor
     case 't': getTemperature();         break;  // Get the BME280 sensor's temperature in Celsius
@@ -262,6 +270,66 @@ void commands(){
     default:    c = '?';                break;  // Unknown command
   }
   if (c != '\0') Serial.println(c);
+}
+//-------------------------------------------------------------------------------------------------
+void printText(){
+  if (gettingPwd) {
+    c = '%';
+    return;
+  }
+  unsigned long timer = millis() + 1000;
+  char chr[2];
+  while (timer > millis()){
+    Serial.readBytes(chr, 1);
+    switch (chr[0]) {
+      case '\0':  return;             break;
+      case '\r':  return;             break;
+      case '\n':  return;             break;
+      case ']':   return;             break;
+      case '@':   setCursor();        break;
+      case '$':   escapeCodes();      break;
+      default:    printChar(chr[0]);  break;
+    }
+  }
+}
+//-------------------------------------------------------------------------------------------------
+void escapeCodes(){
+// "$" is used as the escape character
+  if (gettingPwd) {
+    c = '%';
+    return;
+  }
+
+  char chr[2];
+  Serial.readBytes(chr, 1);
+  switch (chr[0]) {
+    case 'I': lcd.init();                           break;
+    case 'L': lcd.backlight();    lcdBacklight = 1; break;
+    case 'l': lcd.noBacklight();  lcdBacklight = 0; break;
+    case 'D': lcd.display();      lcdDisplay = 1;   break;
+    case 'd': lcd.noDisplay();    lcdDisplay = 0;   break;
+    case 'B': lcd.blink();        lcdBlink = 1;     break;
+    case 'b': lcd.noBlink();      lcdBlink = 0;     break;
+    case 'C': lcd.cursor();       lcdCursor = 1;    break;
+    case 'c': lcd.noCursor();     lcdCursor = 0;    break;
+    case '[': printChar('[');                       break;  // Print characters used as escape codes
+    case ']': printChar(']');                       break;
+    case '@': printChar('@');                       break;
+    case '$': printChar('$');                       break;
+    case 'U': createChar();                         break;  // Create a user defined graphic (UDG)
+    case '0': printChar(byte(0));                   break;  // Print UDGs
+    case '1': printChar(byte(1));                   break;
+    case '2': printChar(byte(2));                   break;
+    case '3': printChar(byte(3));                   break;
+    case '4': printChar(byte(4));                   break;
+    case '5': printChar(byte(5));                   break;
+    case '6': printChar(byte(6));                   break;
+    case '7': printChar(byte(7));                   break;
+    case 'H': lcd.setCursor(x = 0, y = 0);          break;  // Cursor home
+    case 'N': lcd.setCursor(x = 0, ++y);            break;  // Move cursor down a row
+    case 'R': lcd.setCursor(x = 0, y);              break;  // Return cursor to start of row
+    case 'X': clearLCD();                           break;  // Clear screen & return cursor home
+  }
 }
 //=================================================================================================
 #pragma endregion
@@ -649,32 +717,35 @@ void tickTock(){
 // LOCAL CONDITIONS
 //=================================================================================================
 void getTemperature(){                    // t
-  // https://cdn.shopify.com/s/files/1/1509/1638/files/AZ109_A3-7_EN_B07D8T4HP6_068a8db7-3572-4ef5-b396-be75b7ec8810.pdf?v=1721047611
-  if (!bme.begin(0x76)) {
-    c = '%';
-  }
-  else {
+  // bme: https://cdn.shopify.com/s/files/1/1509/1638/files/AZ109_A3-7_EN_B07D8T4HP6_068a8db7-3572-4ef5-b396-be75b7ec8810.pdf?v=1721047611
+  // RTC: https://github.com/Zanduino/DS3231M/tree/master
+  c = '\0';
+  if (bme.begin(0x76)) {
     printTemperature();
-    c = '\0';
   }
+  else if (RTC.begin()) {
+    Serial.print(RTC.temperature() / 100.0, 1);
+    Serial.print('C');
+  }
+  else Serial.println("99.9C");
 }
-
+//-------------------------------------------------------------------------------------------------
 void printTemperature() {
-  Serial.print(bme.readPressure(), 1);
+  Serial.print(bme.readTemperature(), 1);
   Serial.println("C");
 }
 //-------------------------------------------------------------------------------------------------
 void getHumidity(){                       // h
   // https://cdn.shopify.com/s/files/1/1509/1638/files/AZ109_A3-7_EN_B07D8T4HP6_068a8db7-3572-4ef5-b396-be75b7ec8810.pdf?v=1721047611
-  if (!bme.begin(0x76)) {
-    c = '%';
+  c = '\0';
+  if (bme.begin(0x76)) {
+    printHumidity();
   }
   else {
-    printHumidity();
-    c = '\0';
+    Serial.println("999%");
   }
 }
-
+//-------------------------------------------------------------------------------------------------
 void printHumidity() {
   Serial.print(bme.readHumidity(), 1);
   Serial.println("%");  
@@ -682,15 +753,15 @@ void printHumidity() {
 //-------------------------------------------------------------------------------------------------
 void getBarometer(){                      // b
   // https://cdn.shopify.com/s/files/1/1509/1638/files/AZ109_A3-7_EN_B07D8T4HP6_068a8db7-3572-4ef5-b396-be75b7ec8810.pdf?v=1721047611
-  if (!bme.begin(0x76)) {
-    c = '%';
+  c = '\0';
+  if (bme.begin(0x76)) {
+    printPressure();
   }
   else {
-    printPressure();
-    c = '\0';
+    Serial.println("999.9mb");
   }
 }
-
+//-------------------------------------------------------------------------------------------------
 void printPressure() {
   Serial.print(float(bme.readPressure()) / 100, 1);
   Serial.println("mb");
@@ -932,32 +1003,6 @@ void printLCDbuffer() {
   lcd.setCursor(0, 1);
   lcd.print(disp1);
   lcd.setCursor(x, y);
-
-//  for (byte i = 0; i <= 15; i++) lcd.write(disp0[i]);
-//  lcd.setCursor(0, 1);
-//  for (byte i = 0; i <= 15; i++) lcd.write(disp1[i]);
-//  lcd.setCursor(x, y);
-}
-//-------------------------------------------------------------------------------------------------
-void printText(){
-  if (gettingPwd) {
-    c = '%';
-    return;
-  }
-  unsigned long timer = millis() + 1000;
-  char chr[2];
-  while (timer > millis()){
-    Serial.readBytes(chr, 1);
-    switch (chr[0]) {
-      case '\0':  return;             break;
-      case '\r':  return;             break;
-      case '\n':  return;             break;
-      case ']':   return;             break;
-      case '@':   setCursor();        break;
-      case '$':   escapeCodes();      break;
-      default:    printChar(chr[0]);  break;
-    }
-  }
 }
 //-------------------------------------------------------------------------------------------------
 void setCursor(){
@@ -970,45 +1015,6 @@ void setCursor(){
   y = Serial.parseInt();
   x = Serial.parseInt();
   lcd.setCursor(x, y);
-}
-//-------------------------------------------------------------------------------------------------
-void escapeCodes(){
-// "$" is used as the escape character
-  if (gettingPwd) {
-    c = '%';
-    return;
-  }
-
-  char chr[2];
-  Serial.readBytes(chr, 1);
-  switch (chr[0]) {
-    case 'I': lcd.init();                           break;
-    case 'L': lcd.backlight();    lcdBacklight = 1; break;
-    case 'l': lcd.noBacklight();  lcdBacklight = 0; break;
-    case 'D': lcd.display();      lcdDisplay = 1;   break;
-    case 'd': lcd.noDisplay();    lcdDisplay = 0;   break;
-    case 'B': lcd.blink();        lcdBlink = 1;     break;
-    case 'b': lcd.noBlink();      lcdBlink = 0;     break;
-    case 'C': lcd.cursor();       lcdCursor = 1;    break;
-    case 'c': lcd.noCursor();     lcdCursor = 0;    break;
-    case '[': printChar('[');                       break;  // Print characters used as escape codes
-    case ']': printChar(']');                       break;
-    case '@': printChar('@');                       break;
-    case '$': printChar('$');                       break;
-    case 'U': createChar();                         break;  // Create a user defined graphic (UDG)
-    case '0': printChar(byte(0));                   break;  // Print UDGs
-    case '1': printChar(byte(1));                   break;
-    case '2': printChar(byte(2));                   break;
-    case '3': printChar(byte(3));                   break;
-    case '4': printChar(byte(4));                   break;
-    case '5': printChar(byte(5));                   break;
-    case '6': printChar(byte(6));                   break;
-    case '7': printChar(byte(7));                   break;
-    case 'H': lcd.setCursor(x = 0, y = 0);          break;  // Cursor home
-    case 'N': lcd.setCursor(x = 0, ++y);            break;  // Move cursor down a row
-    case 'R': lcd.setCursor(x = 0, y);              break;  // Return cursor to start of row
-    case 'X': clearLCD();                           break;  // Clear screen & return cursor home
-  }
 }
 //-------------------------------------------------------------------------------------------------
 void printChar(char chr){
@@ -1376,7 +1382,9 @@ RAIN            D12     |  |USB|  | D13       LED
                 ooo1  RST D13 D12
                 ooo    5V D11 GND 
 
-   GX12 pin connectors (panel mounted) configurations
+  CrayStation Control Box Connections
+  ===================================
+  GX12 pin connectors (panel mounted) configurations
 
   Looking into the socket with pins pointing towards viewer, pin numbers increase anti-clockwise 
   starting from the key notch.
