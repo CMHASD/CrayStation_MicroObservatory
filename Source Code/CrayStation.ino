@@ -1,4 +1,4 @@
-#define VERSION "CMHASD V0.251104"
+#define VERSION "CMHASD V0.251116"
 // Started code on 13 Oct 2024.  For Arduino Nano.
 #pragma region GLOBAL SETTINGS
 #include <Servo.h>
@@ -31,8 +31,8 @@
 #define P_HBX_CXN       A3
 #define P_SDA           A4
 #define P_SCL           A5
-#define P_SOLAR         A6
-#define BATT_V          A7
+#define P_SOL_V         A6
+#define P_BAT_V         A7
 
 #define E_BUZZER        11        // Handbox buzzer pin on the PCF8785 expansion board in HandBox
 #define E_KEY_R         6         // Right key pin
@@ -44,8 +44,8 @@
 #define E_KEY_NONE      0         // Value to return in a function when no key is being pressed
 
 #define SCALE_AMPS      100       // 5A module = 185, 20A = 100, 30A = 66
-#define SCALE_BATT      1         // Calibrated value to allow Arduino to measure battery voltage
-#define SCALE_SOLAR     1         // Calibrated value to allow Arduino to measure solar panel voltage
+#define SCALE_BATT      10.0      // Calibrated value to allow Arduino to measure battery voltage
+#define SCALE_SOLAR     10.0      // Calibrated value to allow Arduino to measure solar panel voltage
 #define BATT_BLACK      12.10     // Battery is less than 50% - needs charging.  System can't be used CRITICAL!!
 #define BATT_RED        12.24     // Limited access to the RPi
 #define BATT_AMBER      12.37     // Above this - all systems go! Below this - system should be kept in power saving mode
@@ -55,10 +55,10 @@
 #define LEVEL_AMBER     2         // Power up RPi every half hour.  Ensure lid closed and telescope power is off
 #define LEVEL_GREEN     3         // All systems are go!
 
-#define LCD_WIDTH     16          // Number of characters on each line of the LCD display
-#define LCD_HEIGHT    2           // Number of lines on the LCD display
-#define CANNOT_DO     '$'         // Response if a command can't be carried out.
-#define UNKNOWN_CMD   '?'         // Response if an invalid command has been given
+#define LCD_WIDTH       16        // Number of characters on each line of the LCD display
+#define LCD_HEIGHT      2         // Number of lines on the LCD display
+#define CANNOT_DO       '$'       // Response if a command can't be carried out.
+#define UNKNOWN_CMD     '?'       // Response if an invalid command has been given
 
 Servo myServo;                            // Servo for pushing telescope's power button
 Adafruit_PCF8575 handBox;                 // Access handbox's keys and buzzer
@@ -69,20 +69,24 @@ DateTime now;                             // Class for getting and writing data 
 SoftwareSerial GPSserial(P_SPARE_D9, 9);  // For receiving NEMA sentences from a GPS module
 
 volatile unsigned long timerLid = 0;      // Timer for lid timeout
-unsigned long timerPowerOff = 0;          // For RPi power
-unsigned long timerPowerOn = 0;           // For RPi power
+unsigned long timerRPiOff = 0;            // For RPi power
+unsigned long timerRPiOn = 0;             // For RPi power
 unsigned long timerCloseLid = 0;          // Timer for when lid must close
 unsigned long tick =0;                    // Increments once a second - for timing functions
 unsigned long timerHandBox = 0;           // Timer for before resetting handbox when disconnected
-unsigned long timerServo = 0;             // Timer for pressing the telescope's on/off button
+unsigned long timerServo = 1;             // Timer for pressing scope's button. Set to 1 to ensure servo is at home postion at start-up
 unsigned long timerBattCharging = 0;      // Timer for charging battery
-unsigned long ardClock = -1;              // Clock which increments once a second (rolls over after 136 years!)
-long secsPastHour = 3600;                 // RPi power timer settings
+unsigned long timerDewHeater = 0;
+unsigned long ardSecs = 0;
+unsigned long secsRPiOff = 0;
+int secsPastHour = 1800;
+int secsRPiOn = 0;
 
 char c;                                   // Used to get a command from the RPi and to a one character response
+char chr[2];                              // Used to get next command character, allowing a timeout condition
 volatile byte pwm = 0;                    // Motor stopped
-byte dir = 1;                             // Motor direction for closing.
-byte heater = 0;                          // SkyCam Heater
+bool dir = 1;                             // Motor direction for closing.
+byte dewHeater = 0;                          // SkyCam Heater
 byte battLevel = LEVEL_GREEN;             // Assume battery is good at start.
 
 byte x = 0;                               // LCD cursor coords
@@ -96,12 +100,12 @@ char disp1[17];                           // Display buffer for bottom line
 char pwd[64];                             // Maximum length of a WiFi password is 63 chars
 bool gettingPwd = false;                  // Indicates whether HandBox is getting password from user
 byte handBoxInUse = 10;                   // If RPi is not using the RPi then HandBox displays the clock
-char GPSsentence[2][82];
+char GPSsentence[6][82];
 byte GPSlinePos = 0;
-bool GPSline = 0;
 
 bool chargingScope = false;               // Telescope charging status
 bool servoReturning = false;              // If true, the servo has been set in motion
+bool RPiPowerOn = false;                  // Status of power to RPi
 bool poweringDown = false;                // RPi is powering down, because it said it is or if the battery is at critical level
 bool ignoreRain = false;                  // For Superuser use.  Making this true allows roof to be opened regardless of the weather
 
@@ -141,53 +145,54 @@ void setup() {
   pinMode(P_OP_SW,          INPUT_PULLUP);
   pinMode(P_CL_SW,          INPUT_PULLUP);
   pinMode(P_HBX_CXN,        INPUT_PULLUP);
-  pinMode(P_SOLAR,          INPUT);
-  pinMode(BATT_V,           INPUT);
   pinMode(P_AMPS,           INPUT);
   pinMode(P_SPARE_A0,       OUTPUT);            // Power to GPS Module
 
   analogWrite(P_MTR_PWM,    LOW);               // No power to the motor
   digitalWrite(P_MTR_DIR,   LOW);               // Default to 'Open'
-  digitalWrite(P_SRV_PWR,   LOW);
   digitalWrite(P_BUZZER,    LOW);
   digitalWrite(P_CAM_HTR,   LOW);
   digitalWrite(P_TEL_PWR,   LOW);
-  digitalWrite(P_RPI_PWR,   HIGH);              // Power-up the Raspberry Pi
-  digitalWrite(P_SPARE_A0,  LOW);               // No power to GPS module
+  digitalWrite(P_RAIN,      HIGH);
+  digitalWrite(P_RPI_PWR,   RPiPowerOn = HIGH); // Power-up the Raspberry Pi
+  digitalWrite(P_SPARE_A0,  HIGH);              // No power to GPS module
 
   // Intialise Settings & Clock
   int addr;
-  EEPROM.get(0, addr);                          // Get EEPROM address where settings are held
+  EEPROM.get(0, addr);                                // Get EEPROM address where settings are held
   if (addr > 1022) addr = 2;
   EEPROM.get(addr, ee);
-  EEPROM.get(1014, clock);                      // Asssume what is stored here is the correct time
+  EEPROM.get(1014, clock);                            // Asssume what is stored here is the correct time
   syncToRTC();
-  setArdClock();
-  GPSsentence[0][0] = GPSsentence[1][0] = '\0'; // Make ready to receive first output from GPS module
+  for (byte i = 0; i < 6; i++) GPSsentence[i][0] = 0; // Make ready to receive first output from GPS module
+
 
   // Serial port
   Serial.begin(115200);
-  Serial.setTimeout(50);
-  Serial.println("\nInitialising...");
+  Serial.print('{');
   GPSserial.begin(9600);
-  beep(500);
+  //beep(500);
 
  // Initialise handbox
   checkHandBox();
 
-  // Lid limit switches interrupts
-  //attachInterrupt(digitalPinToInterrupt(P_OP_SW), stopMotor, LOW);
-  //attachInterrupt(digitalPinToInterrupt(P_CL_SW), stopMotor, LOW);
-
   // Initialise telescope power button servo
-  myServo.attach(P_SRV_SIG);
-  myServo.write(ee.servoHome);
+  digitalWrite(P_SRV_PWR, HIGH);            // Power up the servo to ensure it returns to home postion
+  myServo.attach(P_SRV_SIG);                // Initialise Servo
 
-  Serial.println("Ready");
+  Serial.println('}');
 }
 //=================================================================================================
 void loop() {
+  serviceServo();
   tickTock();                           // Update clocks
+  powerManagement();
+  checkRain();                          // Check if raining - close lid if it is
+  serviceMotor();                       // Control motor and monitor enclosure switches
+  commands();                           // Service Comms from RPi
+  checkHandBox();
+  serviceGPS();
+  updateEEPROM();
 
   if (ee.reset == 255) {
     // Reset EEPROM with default values if ee.reset is not 0
@@ -199,14 +204,6 @@ void loop() {
     ee.secsStayAwake = 600;
     EEPROM.put(1014, clock);
   }
-  updateEEPROM();
-  powerManagement();
-  checkRain();                          // Check if raining - close box if it is
-  serviceMotor();                       // Control motor and monitor enclosure switches
-  commands();                           // Service Comms from RPi
-  checkHandBox();
-  serviceServo();
-  serviceGPS();
 }
 //=================================================================================================
 #pragma endregion
@@ -217,7 +214,7 @@ void loop() {
 void commands(){
   if (!Serial.available()) return;              // Return if nothing received
   c = Serial.read();
-  beep(1);
+  //beep(1);
 
   switch (c){
     case 'O': openLid();                break;
@@ -225,7 +222,7 @@ void commands(){
     case 'm': getMotorStatus();         break;  // c = closed, c = closing, o = open, O = opening, T = timed out
     case 'M': setMotorTimeOut();        break;  // Set lid opening/closing time out
     case 'X': stopMotor();              break;
-    case 'c': setCloseTimer();          break;
+    case 'c': setCloseTimer();          break;  // Force lid to close after x secs
     case '=': nudgeLid();               break;  // **CAREFUL** Force moves the lid for x ms in either direction, regardless.
 
     case 'B': telescopeButton();        break;  // Press telescope's on/off button for supplied ms
@@ -234,42 +231,43 @@ void commands(){
     case '^': chargeScope();            break;  // Turn on/off/get(-1) power for charging scope
 
     case 'L': leds();                   break;  // Turn on/off/get power to the LEDs
-    case 'D': dewHeater();              break;  // Turn on/off/get(-1) power to the skycam's dew heater
-    case 'Z': soundBuzzer();            break;  // Sound buzzer (& handbox buzzer) for a given period
+    case 'D': setDewHeater();           break;  // Set dew heater power and heater timer
+    case 'd': getCamHeater();           break;  // Get heater power and heater timer
+    case 'Z': beep(Serial.parseInt());  break;  // Sound buzzer (& handbox buzzer) for a given period
 
     case '#': checkHandBox();           break;  // Sees if the handbox is connected, and if Nano will be powering off the RPi
     case 'k': getKey();                 break;  // Returns pressed key info on handbox
-    case '[': printText();              break;  // Sent a string of text to the HandBox display
-    case '@': setCursor();              break;  // Set coordinates of the Handbox display's cursor
-    case '$': escapeCodes();            break;  // Set HandBox diplay's settings
+    case '[': lcdPrint();               break;  // Sent a string of text to the HandBox display
     case 'E': enterPassword();          break;  // Get HandBox to get a WiFi password from the user
     case 'P': getPassword();            break;  // Returns the password supplied by the user
     case 'g': c = '0' + gettingPwd;     break;  // See if a password is being got by the handbox
 
     case '~': stillActive();            break;  // RPi will still keep sending this command
-    case 'z': goToSleep();              break;  // Does RPi need to go to sleep? (E.g. low battery)
+    case 'z': goToSleep();              break;  // RPi want to go to sleep within 60 secs
     case 'G': goodNight();              break;  // Cut power to RPi in 1 minute
     case 'T': setClock();               break;  // Set Arduino's clock and RTC YYYY/MM/DD HH:MM:SS
-    case 'A': getArdTime();             break;  // GEt Arduino clock's time and date
+    case 'A': getArdTime();             break;  // Get Arduino clock's time and date
     case 'R': getRTCtime();             break;  // Get RTC's time and date
-    case 'p': powerOffTimer();          break;  // Time left in seconds before RPi is turned off (don't extend timerPowerOff)
-    case 'S': digitalWrite(P_SPARE_A0, HIGH);           break;  // GPS power ON
-    case 's': digitalWrite(P_SPARE_A0, LOW);            break;  // GPS power OFF
-    case '*': Serial.println(GPSsentence[!GPSline]);    break;  // Send last line of data received from the GPS module
+    case 'p': powerOffTimer();          break;  // Time left in seconds before RPi is turned off (don't extend timerRPiOff)
+//    case 'S': digitalWrite(A0, LOW);    break;  // GPS power ON
+//    case 's': digitalWrite(A0, HIGH);   break;  // GPS power OFF
+    case '@': for (byte i = 1; i < 6; i++) Serial.println(GPSsentence[i]); c = '|';
+                                        break;  // Send last line of data received from the GPS module
 
-    case 'r': checkRain();              break;  // Is the sensor indicating that it is raining? '1' = yes, '0' = no
-    case 'F': ignoreRain = true;        break;  // Ignore rain sensor so that the lid can be opened and closed even if raining
-    case 'f': ignoreRain = false;       break;  // Start recognising rain sensor
-    case 't': getTemperature();         break;  // Get the BME280 sensor's temperature in Celsius
-    case 'h': getHumidity();            break;  // Get the BME280 sensor's hygrometer reading as a %age
-    case 'b': getBarometer();           break;  // Get the BME280 sensor's air pressure in mb
-    
     case 'v': getBatteryVolts();        break;  // Get the battery's voltage
     case 'u': getSolarVolts();          break;  // Get the solar panel's voltage
     case 'a': getAmps();                break;  // 12V battery amps currently being consumed
 
+    case 'S': getStatus();              break;  // Report back the output of attached sensors
+    case 't': getTemperature();         break;  // Get the BME280 sensor's temperature in Celsius
+    case 'h': getHumidity();            break;  // Get the BME280 sensor's hygrometer reading as a %age
+    case 'b': getBarometer();           break;  // Get the BME280 sensor's air pressure in mb
+    case 'r': checkRain();              break;  // Is the sensor indicating that it is raining? '1' = yes, '0' = no
+    case 'I': ignoreRain = true;        break;  // Ignore rain sensor so that the lid can be opened and closed even if raining
+    case 'i': ignoreRain = false;       break;  // Start recognising rain sensor
+    
     case 'e': ee.reset = 255;           break;  // Resets the EERPOM contents in the Loop function above
-    case 'i': getVersion();             break;  // Get version of this code
+    case 'V': getVersion();             break;  // Get version of this code
     case '_': restart();                break;  // Restart the Arduino
     case '?': systemStatus();           break;  // Full diagnostic report
     case '\n':  c = '\0';               break;
@@ -279,24 +277,20 @@ void commands(){
   if (c != '\0') Serial.println(c);
 }
 //-------------------------------------------------------------------------------------------------
-void printText(){
+void lcdPrint(){
+  if (handBoxInUse) clearLCD();
   if (gettingPwd) {
     c = CANNOT_DO;
     return;
   }
-  unsigned long timer = millis() + 1000;
-  char chr[2];
-  while (timer > millis()){
-    Serial.readBytes(chr, 1);
-    switch (chr[0]) {
-      case '\0':  return;             break;
-      case '\r':  return;             break;
-      case '\n':  return;             break;
-      case ']':   return;             break;
-      case '@':   setCursor();        break;
-      case '$':   escapeCodes();      break;
-      default:    printChar(chr[0]);  break;
-    }
+  switch (nextSerialChar()) {
+    case '\0':  return;             break;
+    case '\r':  return;             break;
+    case '\n':  return;             break;
+    case ']':   return;             break;
+    case '@':   setCursor();        break;
+    case '$':   escapeCodes();      break;
+    default:    printChar(chr[0]);  break;
   }
 }
 //-------------------------------------------------------------------------------------------------
@@ -307,9 +301,7 @@ void escapeCodes(){
     return;
   }
 
-  char chr[2];
-  Serial.readBytes(chr, 1);
-  switch (chr[0]) {
+  switch (nextSerialChar()) {
     case 'I': lcd.init();                           break;
     case 'L': lcd.backlight();    lcdBacklight = 1; break;
     case 'l': lcd.noBacklight();  lcdBacklight = 0; break;
@@ -319,163 +311,20 @@ void escapeCodes(){
     case 'b': lcd.noBlink();      lcdBlink = 0;     break;
     case 'C': lcd.cursor();       lcdCursor = 1;    break;
     case 'c': lcd.noCursor();     lcdCursor = 0;    break;
-    case '[': printChar('[');                       break;  // Print characters used as escape codes
-    case ']': printChar(']');                       break;
-    case '@': printChar('@');                       break;
-    case '$': printChar('$');                       break;
     case 'H': lcd.setCursor(x = 0, y = 0);          break;  // Cursor home
     case 'N': lcd.setCursor(x = 0, y = 1 - y);      break;  // Move cursor onto beginning of the other row
     case 'R': lcd.setCursor(x = 0, y);              break;  // Return cursor to start of row
     case 'X': clearLCD();                           break;  // Clear screen & return cursor home
-  }
-}
-//=================================================================================================
-#pragma endregion
-#pragma region POWER MANAGEMENT
-//=================================================================================================
-// POWER MANAGEMENT
-//=================================================================================================
-void powerManagement() {
-  unsigned long beepTimer = millis();
-
-  serviceRPiTimers();
-  switch (batteryStatus()) {
-    case LEVEL_BLACK:
-      if (battLevel == LEVEL_BLACK) return;
-      digitalWrite(P_CAM_HTR, LOW);                               // Turn off unnecessary devices   
-      digitalWrite(P_TEL_PWR, LOW);
-      digitalWrite(P_LED, LOW);
-      poweringDown = true;                                        // Power off the RPI in 60 secs to hopefully
-      timerPowerOff = ardClock + 60;                              // allowing time for the RPi to close gracefully
-      handboxChargingStatus();
-      closeLid();
-      if (millis() > beepTimer) digitalWrite(P_BUZZER, HIGH);       // Start buzzer - allow it to sound for 100ms
-      if (millis() > beepTimer + 100) digitalWrite(P_BUZZER, LOW);  // Turn off buzzer after 100ms
-      if (millis() > beepTimer + 10000) beepTimer = millis();       // Reset beepTimer after 10secs
-      secsPastHour = 3600;
-      break;
-
-    case LEVEL_RED:
-      if (battLevel < LEVEL_RED) return;
-      digitalWrite(P_CAM_HTR, LOW);                               // Switch off unnecessary devices
-      digitalWrite(P_TEL_PWR, LOW);
-      digitalWrite(P_LED, LOW);
-      closeLid();
-      secsPastHour = 3600;
-      break;
-
-    case LEVEL_AMBER:
-      if (battLevel < LEVEL_AMBER) return;
-      if (ardClock > timerPowerOff) {                             // Time to sleep?
-        digitalWrite(P_CAM_HTR, LOW);                             // Put devices to sleep
-        digitalWrite(P_TEL_PWR, LOW);
-        digitalWrite(P_LED, LOW);
-        secsPastHour = 3600;
-      }
-      break;
-
-    case LEVEL_GREEN:
-      if (battLevel < LEVEL_GREEN) return;
-      battLevel = LEVEL_GREEN;
-        digitalWrite(P_TEL_PWR, HIGH);
-        secsPastHour = 1800;
-      break;
-  }
-} 
-//-------------------------------------------------------------------------------------------------
-byte batteryStatus() {
-  byte currLevel = LEVEL_BLACK;
-  float v = measureVolts(BATT_V, SCALE_BATT, 20);
-
-  if (v >= BATT_RED)   currLevel = LEVEL_RED;
-  if (v >= BATT_AMBER) currLevel = LEVEL_AMBER;
-  if (v >= BATT_GREEN) currLevel = LEVEL_GREEN;
-
-  if (currLevel < battLevel || ardClock > timerBattCharging) {
-    battLevel = currLevel;
-    timerBattCharging = ardClock + 600;
-  } 
-  return battLevel;
-}
-//-------------------------------------------------------------------------------------------------
-void leds(){                                // L
-  delay(10);
-  switch (Serial.read()) {
-    case '0': 
-      digitalWrite(P_LED, LOW);
-      break;
-    case '1':
-      if (batteryStatus()) {
-        digitalWrite(P_LED, HIGH);
-        c = CANNOT_DO;
-      }
-      break;
-    case '\n':
-      Serial.println(digitalRead(P_LED));
-      c = '\0';
-      break;
+    case '@': setCursor();                          break;  // Set coordinates of the Handbox display's cursor
+    case '[': printChar('[');                       break;  // Print characters used as escape codes
+    case ']': printChar(']');                       break;
+    case '$': printChar('$');                       break;
   }
 }
 //-------------------------------------------------------------------------------------------------
-void dewHeater(){                           // Dx
-  int value = Serial.parseInt();
-  if (value >= 0 || value <= 100) {
-      if (batteryStatus() < LEVEL_GREEN) value = 0;
-      analogWrite(P_CAM_HTR, heater = (value * 255) / 100);
-  }
-  Serial.println(value);
-  c = '\0';
-}
-// 210ma at 12V needs to be delivered (maximum) for the All-Sky Cam dome.
-// dewcontrol.com heater uses 57 x 3300 ohm (332) resistors in paralled on a ring which is powered by 12V.
-// Total resistance = 57.9 ohms. A fully charged 12V 7ah would last 33 hours.
-//-------------------------------------------------------------------------------------------------
-void getBatteryVolts() {                    // v
-  float volts = measureVolts(BATT_V, SCALE_BATT, 20);
-  c = '\0';
-  if (volts >= 14.0) volts = 13.9;
-  Serial.print(volts, 1);                                     // Needs to be in the form like 13.7V (Good)
-  if(volts < 12.1) Serial.println("V (Bad) ");
-  else if (volts < 12.6) Serial.println("V (Poor)");
-  else Serial.println("V (Good)");
-}
-//-------------------------------------------------------------------------------------------------
-void getSolarVolts() {                      // u
-  float volts = measureVolts(P_SOLAR, SCALE_SOLAR, 20);
-  c = '\0';
-  if (volts > 30) volts = 30.0;
-  Serial.print(volts, 1);                                     // Needs to be in the form like 27.7V
-  Serial.println('V');
-}
-//-------------------------------------------------------------------------------------------------
-float measureVolts(int pin, float scale, int samples) {
-  float average = 0;
-  for (byte i = 0; i < samples; i++){
-    average += analogRead(pin);
-    delay(1);
-  }
-  return average / samples * scale;
-}
-//-------------------------------------------------------------------------------------------------
-void getAmps() {                            // a
-  // https://www.amazon.co.uk/s?k=ACS712+20A&crid=3SKQ3JVK7WWHD&sprefix=acs712+20a%2Caps%2C63&ref=nb_sb_noss
-  // AZDelivery ACS712 20A
-  // https://cdn.shopify.com/s/files/1/1509/1638/files/AZ043_A_8-6_EN_B0736DYV3W_c2659f11-4c11-4aaf-8f7e-3d84ee0c3b9a.pdf?v=1721208630
-  // SCALE_AMPS = 5A module = 185, 20A = 100, 30A = 66
-
-  float average = 0;                                  // Take an average of 100 readings to get a stable reading
-  for (byte i = 0; i < 100; i++) {
-    average += analogRead(P_AMPS);
-    delay(1);
-  }
-  average /= 100;
-  float voltage = (average / 1023.0) * 5000.0;
-  float current = (voltage - 2500.0) / SCALE_AMPS;    // 2500 may need to be changed after calibration for 0 amps
-  if (current < 0) current = 0;
-
-  c = '\0';
-  Serial.print(current * 1000.0);                     // Return milli-amps
-  Serial.println("mA");
+char nextSerialChar() {
+  Serial.readBytesUntil('\n', chr, 1);
+  return chr[0];
 }
 //=================================================================================================
 #pragma endregion
@@ -496,7 +345,7 @@ void telescopeButton(){                     // Bx (x is in  ms)
 void serviceServo() {
   if (timerServo && millis() > timerServo) {// Test to see if timerServo was set and has expired
     if (servoReturning) {
-      timerServo = 0;                       // If servo was returning the reset timer
+      timerServo = 0;                       // If servo was returning, reset timer
       digitalWrite(P_SRV_PWR, LOW);         // and cut power to the servo.
       servoReturning = false;               // Servo is no longer moving
     }
@@ -508,17 +357,16 @@ void serviceServo() {
   }
 }
 //-------------------------------------------------------------------------------------------------
-void chargeScope(){                         // Ex (no parameter given returns current state)
-  delay(10);
-  switch (Serial.read()){
+void chargeScope(){                                   // Ex (no parameter given returns current state)
+  switch (nextSerialChar()){
     case '0':
-      digitalWrite(P_TEL_PWR, chargingScope = 0);   // Stop charging
+      digitalWrite(P_TEL_PWR, chargingScope = LOW);   // Stop charging
       break;
     case '1':
-      digitalWrite(P_TEL_PWR, chargingScope = 1);   // Start charging
+      digitalWrite(P_TEL_PWR, chargingScope = HIGH);  // Start charging
       break;
     case '\n':
-      c = chargingScope + '0';                      // Charging status (on or off)
+      c = chargingScope + '0';                        // Charging status (on or off)
       break;
   }
 }
@@ -540,173 +388,116 @@ int getAngle(int angle){
 }
 //=================================================================================================
 #pragma endregion
-#pragma region CLOCKS AND TIMERS
+#pragma region LID CONTROL
 //=================================================================================================
-// CLOCKS AND TIMERS
+//  LID CONTROL
 //=================================================================================================
-void serviceRPiTimers() {
-  if (ardClock > timerPowerOn && ardClock < timerPowerOff) {
-    digitalWrite(P_RPI_PWR, HIGH);                                  // Good morning RPi
-    setRPiTimers();
-  }
-  if (ardClock > timerPowerOff) {
-    digitalWrite(P_RPI_PWR, LOW);                                   // Good night RPi
-    digitalWrite(P_LED, LOW);
-    digitalWrite(P_CAM_HTR, LOW);                                   // (Should this be done?)
-    setRPiTimers();
-  }
-}
-// ------------------------------------------------------------------------------------------------
-void setRPiTimers() {
-    timerPowerOn  = (unsigned long)(ardClock / secsPastHour) * secsPastHour + secsPastHour; 
-    timerPowerOff = timerPowerOn + ee.secsStayAwake;
-}
-// ------------------------------------------------------------------------------------------------
-void setCloseTimer() {
-  if (unsigned long val = Serial.parseInt() > 0) timerCloseLid = val;
-  c = '\0';
-  Serial.println(timerCloseLid);
-}
-//-------------------------------------------------------------------------------------------------
-void stillActive() {                        // ~
-  if (!poweringDown) timerPowerOff = ardClock + ee.secsStayAwake; // RPi says it wants to stay awake - postpone time to turn off
-  else c = CANNOT_DO;                                             // Return error code if already powering down
-}
-//-------------------------------------------------------------------------------------------------
-void goToSleep() {
-  timerPowerOff = ardClock + 60;                        // RPi wants to go to sleep
-  poweringDown = true;
-}
-//-------------------------------------------------------------------------------------------------
-void goodNight() {
-  c = '\0';
-  if (batteryStatus() == LEVEL_BLACK && !poweringDown) {
-    timerPowerOff = ardClock + 60;
-    poweringDown = true;
-    Serial.print('0');                                  // Print an extra leading 0 - the RPi WILL be powered off
-  }
-  Serial.println(timerPowerOff - ardClock);             // Time left until sleepy time
-}
-//-------------------------------------------------------------------------------------------------
-void setArdClock() {    // NEEDS MORE WORK
-  long timerPowerOnDiff = (timerPowerOn - ardClock);
-  long timerPowerOffDiff = (timerPowerOff - ardClock);
-  ardClock = (unsigned long)(ardClock / 3600) * 3600 + clock.min * 60 + clock.sec;      // Sync ardClock
-  if (timerPowerOn > (unsigned long)timerPowerOnDiff)   timerPowerOn =  ardClock + timerPowerOnDiff;   // Amend timers
-  if (timerPowerOff > (unsigned long)timerPowerOffDiff) timerPowerOff = ardClock + timerPowerOffDiff;
-}
-//-------------------------------------------------------------------------------------------------
-void powerOffTimer(){                       // p
-  Serial.println(timerPowerOff >0 ? timerPowerOff - ardClock : 0);  // Time left before RPi is powered off
-  c = '\0';
-}
-//-------------------------------------------------------------------------------------------------
-void setClock(){                            // Tyyyy/mm/dd hh:mm:ss
-  int yr, mth, day, hr, min, sec;
-  yr = mth = day = hr = min = sec = 0;
-
-  yr  = Serial.parseInt();
-  mth = Serial.parseInt();
-  day = Serial.parseInt();
-  hr  = Serial.parseInt();
-  min = Serial.parseInt();
-  sec = Serial.parseInt();
-  if (!setClocks(yr, mth, day, hr, min, sec)) c = CANNOT_DO;
-}
-//-------------------------------------------------------------------------------------------------
-bool setClocks(int yr, int mth, int day, int hr, int min, int sec) {
-  if (yr  > 2099 || yr  < 2025) return false;
-  if (mth > 12   || mth < 1)    return false;
-  if (day > 31   || day < 1)    return false;
-  if (hr  > 23   || hr  < 0)    return false;
-  if (min > 59   || min < 0)    return false;
-  if (sec > 59   || sec < 0)    return false;
-  if (mth == 2) if (day > 29 || (day == 29 && yr % 4 > 0)) return false;
-
-  if (RTC.begin()) {
-    RTC.adjust(DateTime(yr, mth, day, hr, min, sec));
-  }
-  clock.yr = yr;
-  clock.mth = mth;
-  clock.day = day;
-  clock.hr = hr;
-  clock.min = min;
-  clock.sec = sec;
-  ardClock = min * 60 + sec;
-  return true;
-}
-//-------------------------------------------------------------------------------------------------
-void getArdTime(){                          // <
-  char buf[20];
-  sprintf(buf, "%04d/%02d/%02d %02d:%02d:%02d", clock.yr, clock.mth, clock.day, clock.hr, clock.min, int(clock.sec));
-  Serial.println(buf);
-  c = '\0';
-}
-//-------------------------------------------------------------------------------------------------
-void getRTCtime(){                          // >
-  char buf[20];
-  DateTime now = RTC.now();
-  sprintf(buf, "%04d/%02d/%02d %02d:%02d:%02d", now.year(), now.month(), now.day(), now.hour(), now.minute(), now.second());
-  Serial.println(buf);
-  c = '\0';
-}
-//-------------------------------------------------------------------------------------------------
-bool syncToRTC() {
-  if(!RTC.begin()) return false;
-  DateTime now = RTC.now();
-  clock.yr = now.year();
-  clock.mth = now.month();
-  clock.day = now.day();
-  clock.hr = now.hour();
-  clock.min = now.minute();
-  clock.sec = now.second();
-  tick = millis() + 1000;
-  setArdClock();
-  return true;
-}
-//-------------------------------------------------------------------------------------------------
-void handBoxUTC () {
-  if (handBoxInUse > 2) { // Wait a bit before starting to show UTC time
-    handBoxInUse--;
+void openLid(){
+  if (checkRain()) {
+    c = CANNOT_DO;
     return;
   }
-  memcpy(disp0, "Waiting for RPi ", 16);
-  sprintf(disp1, " UTC: %02d:%02d:%02d  ", clock.hr, clock.min, int(clock.sec));
-  printLCDbuffer();
+  if(digitalRead(getCloseSw())) {                     // Only start motor if not open
+    if (dir == 1) stopMotor();                        // Stop motor if lid is closing
+    pwm = 255;                                        // Start ramping up motor
+    dir = 0;                                          // Open lid
+    timerLid = millis() + ee.lidTimeOut;              // Setup timeout
+  }
 }
 //-------------------------------------------------------------------------------------------------
-void tickTock(){
-  if (tick < 1000 && millis() > 0x7fffffff) return;         // Account for the ~49 day millis() overflow back to 0.
-  if (millis() < tick) return;
-  ardClock += (millis() - tick) / 1000 + 1;
-  clock.sec += (millis() - tick) / 1000 + 1;
-  tick += 1000;
-  handBoxUTC();                                             // Display UTC on HandBox LCD.
-  if (clock.sec < 60) return;
-  if (syncToRTC()) return;                                  // If RTC is working, sync to it.
-  if (measureVolts(BATT_V, SCALE_BATT, 20) < LEVEL_BLACK) { // Battery is in dire straits.
-    beep(50);                                               // Cry for help
-    delay(100);
-    beep(50);
-    delay(100);
-    beep(50);
+void closeLid(){
+  if(digitalRead(getOpenSw())) {                      // Only start motor if not closed
+    if (dir == 0) stopMotor();                        // Stop if motor is closing
+    pwm = 255;                                        // Start ramping up motor
+    dir = 1;                                          // Close lid
+    timerLid = millis() + ee.lidTimeOut;              // Setup timeout
   }
+}
+//-------------------------------------------------------------------------------------------------
+void getMotorStatus(){
+  if (checkTimedOut()) Serial.print('T');             // 'T' means timed out (return "Tc" or "To")
+  if (pwm > 0) c = dir ? 'C' : 'O';                   // If motor is moving then 'C' means closing and 'O' is opening.
 
-  while (clock.sec > 59) {
-    clock.sec -= 60;
-    if (++clock.min < 60) return;
-    clock.min -= 60;
-    if (++clock.hr < 24) return; 
-    clock.hr -= 24;
-    if (++clock.day < 29) return;
-    if (clock.mth == 2) if(clock.yr % 4 == 0 && clock.day == 29) return;
-    if (clock.day == 30) if (clock.mth == 4 || clock.mth == 6 || clock.mth == 9 || clock.mth == 11) return;
-    if (clock.day == 31) return;
-    clock.day = 1;
-    if (++clock.mth < 13) return;
-    clock.mth = 1;
-    clock.yr++;
+  if (getOpenSw()) {
+    c = 'o';
   }
+  else if (getCloseSw()) {
+    c = 'c';
+  }
+}
+//-------------------------------------------------------------------------------------------------
+bool getOpenSw() {
+  return !digitalRead(P_OP_SW);
+}
+//-------------------------------------------------------------------------------------------------
+bool getCloseSw() {
+  return !digitalRead(P_CL_SW);
+}
+//-------------------------------------------------------------------------------------------------
+bool checkTimedOut() {
+  if (millis() < timerLid) return false;
+  stopMotor();
+  return true;
+}
+//-------------------------------------------------------------------------------------------------
+void serviceMotor(){
+  if (ardSecs > timerCloseLid) {
+    timerCloseLid = -1;
+    closeLid();
+    return;
+  }
+  if (checkTimedOut()) return;
+  digitalWrite(P_MTR_DIR, dir);
+  digitalWrite(P_MTR_PWM, pwm);
+  if (pwm) {
+    if (dir) {
+      detachInterrupt(digitalPinToInterrupt(P_OP_SW));                    // Reset interrupt for open switch
+      attachInterrupt(digitalPinToInterrupt(P_CL_SW), stopMotor, LOW);    // Set up interrupt for closed switch
+      if (!getCloseSw()){                                                 // Stop motor if closed
+        stopMotor();
+        return;
+      }
+    }
+    else {
+      detachInterrupt(digitalPinToInterrupt(P_CL_SW));                    // Reset interrupt for closed switch
+      attachInterrupt(digitalPinToInterrupt(P_OP_SW), stopMotor, LOW);  // Set up interrupt for open switch
+      if (!getOpenSw()){                                                  // Stop motor if open
+        stopMotor();
+        return;
+      }
+    }
+  }
+}
+//-------------------------------------------------------------------------------------------------
+void setMotorTimeOut(){                     // Mx
+  unsigned long value = Serial.parseInt();
+  if (value > 60000 || value < 0){      // Maximumn timeout is 60secs
+    c = CANNOT_DO;
+    return;
+  };
+  ee.lidTimeOut = value > 0 ? value : ee.lidTimeOut;
+  Serial.print(ee.lidTimeOut);
+  c = '\0';
+}
+//-------------------------------------------------------------------------------------------------
+void stopMotor(){                                // X     ***This is also used as an Interrupt Service Routine***
+// Either the open or closed switched, or the motor button has been pressed
+  digitalWrite(P_MTR_PWM, pwm = 0);                       // Stop the motor, pwm = 0 means motor has stopped
+  detachInterrupt(digitalPinToInterrupt(P_OP_SW));        // Reset interrupt for closed switch
+  detachInterrupt(digitalPinToInterrupt(P_CL_SW));        // Reset interrupt for open switch
+  timerLid = 0;                                           // Stop time-out timer
+}
+//-------------------------------------------------------------------------------------------------
+void nudgeLid() {                                // Nx     (-x = close lid for x ms, x = open lid for x ms)
+  int value;
+  if ((value = Serial.parseInt()) == 0) return;
+  digitalWrite(P_MTR_DIR, value > 0 ? LOW: HIGH);
+  if (value < 0) value = -value;
+  noInterrupts();
+  analogWrite(P_MTR_PWM, 255);
+  delay(value);
+  analogWrite(P_MTR_PWM, 0);
+  interrupts();
 }
 //=================================================================================================
 #pragma endregion
@@ -722,8 +513,8 @@ void getTemperature(){                    // t
     printTemperature();
   }
   else if (RTC.begin()) {
-    Serial.print(RTC.temperature() / 100.0, 1);
-    Serial.print('C');
+    Serial.print(RTC.temperature() / 100.0 - 2.5, 1);
+    Serial.println('C');
   }
   else Serial.println("99.9C");
 }
@@ -773,133 +564,354 @@ bool checkRain(){                         // r
   if (ignoreRain) c = '0';                          // Allow lid to open even if rain (in case rain sensor has failed)
   return (c == '1');
 }
+//-------------------------------------------------------------------------------------------------
+void getStatus() {
+  Serial.println(checkRain() ? F("Wet") : F("Dry"));
+  getTemperature();
+  getBarometer();
+  getHumidity();
+  getBatteryVolts();
+  getSolarVolts();
+  getAmps();
+  getCamHeater();
+  c = '|';
+}
+//-------------------------------------------------------------------------------------------------
+void getCamHeater(){                      // d
+  unsigned long timeLeft = 0;
+  if (timerDewHeater > ardSecs) timeLeft = timerDewHeater - ardSecs + 59;
+  Serial.println(dewHeater && timeLeft && batteryStatus() >= LEVEL_AMBER);
+  Serial.println(dewHeater);
+  Serial.println(int((timeLeft) / 60));
+  c = '|';
+}
 //=================================================================================================
 #pragma endregion
-#pragma region LID CONTROL
+#pragma region POWER MANAGEMENT
 //=================================================================================================
-//  LID CONTROL
+// POWER MANAGEMENT
 //=================================================================================================
-void openLid(){
-  if (checkRain()) {
-    c = CANNOT_DO;
-    return;
-  }
-  if(digitalRead(getCloseSw())) {                     // Only start motor if not open
-    if (dir == 1) stopMotor();                        // Stop motor if lid is closing
-    pwm = 255;                                        // Start ramping up motor
-    dir = 0;                                          // Open lid
-    timerLid = millis() + ee.lidTimeOut;              // Setup timeout
-  }
-}
-//-------------------------------------------------------------------------------------------------
-void closeLid(){
-  if(digitalRead(getOpenSw())) {                      // Only start motor if not closed
-    if (dir == 0) stopMotor();                        // Stop if motor is closing
-    pwm = 255;                                        // Start ramping up motor
-    dir = 1;                                          // Close lid
-    timerLid = millis() + ee.lidTimeOut;              // Setup timeout
-  }
-}
-//-------------------------------------------------------------------------------------------------
-void getMotorStatus(){
-  if (checkTimedOut()) Serial.print('T');              // 'T' means timed out (return "Tc" or "To")
-  if (pwm > 0) c = dir ? 'C' : 'O';                   // If motor is moving then 'C' means closing and 'O' is opening.
+void powerManagement() {
+  switch (batteryStatus()) {
+    case LEVEL_BLACK:
+      if (battLevel == LEVEL_BLACK) break;
+      digitalWrite(P_TEL_PWR, LOW);                                 // Turn off unnecessary devices   
+      digitalWrite(P_LED, LOW);
+      poweringDown = true;                                          // Power off the RPI in 60 secs to hopefully
+      secsRPiOff = ardSecs + 60;                                    // allowing time for the RPi to close gracefully
+      handboxChargingStatus();
+      closeLid();
+      secsPastHour = 3600;
+      break;
 
-  if (getOpenSw()) {
-    c = 'o';
+    case LEVEL_RED:
+      if (battLevel < LEVEL_RED) break;
+      digitalWrite(P_TEL_PWR, LOW);                                 // Switch off unnecessary devices
+      digitalWrite(P_LED, LOW);
+      closeLid();
+      secsPastHour = 3600;
+      break;
+
+    case LEVEL_AMBER:
+      if (battLevel < LEVEL_AMBER) break;
+      secsPastHour = 3600;
+      break;
+
+    case LEVEL_GREEN:
+      if (battLevel < LEVEL_GREEN) break;
+      battLevel = LEVEL_GREEN;
+        digitalWrite(P_TEL_PWR, HIGH);
+        secsPastHour = 1800;
+      break;
   }
-  else if (getCloseSw()) {
-    c = 'c';
+
+  // Power on Sky Cam Dew Heater if timer active, battery level is good and a power level has been set.
+  analogWrite(P_CAM_HTR, (dewHeater > 0 && ardSecs > timerDewHeater && battLevel >= LEVEL_AMBER) ? dewHeater : 0);
+} 
+//-------------------------------------------------------------------------------------------------
+byte batteryStatus() {
+  byte currLevel = LEVEL_BLACK;
+  float v = measureVolts(P_BAT_V, SCALE_BATT);
+  if (v >= BATT_RED)   currLevel = LEVEL_RED;
+  if (v >= BATT_AMBER) currLevel = LEVEL_AMBER;
+  if (v >= BATT_GREEN) currLevel = LEVEL_GREEN;
+
+  if (currLevel < battLevel || ardSecs > timerBattCharging) {
+    battLevel = currLevel;
+    timerBattCharging = ardSecs + 600;
+  } 
+  return battLevel;
+}
+//-------------------------------------------------------------------------------------------------
+void leds(){                                // L
+  delay(10);
+  switch (Serial.read()) {
+    case '0': 
+      digitalWrite(P_LED, LOW);
+      break;
+    case '1':
+      if (batteryStatus()) {
+        digitalWrite(P_LED, HIGH);
+        c = CANNOT_DO;
+      }
+      break;
+    case '\n':
+      Serial.println(digitalRead(P_LED));
+      c = '\0';
+      break;
   }
 }
 //-------------------------------------------------------------------------------------------------
-bool getOpenSw() {
-  checkTimedOut();
-  return !digitalRead(P_OP_SW);
+void setDewHeater(){                        // Dx y
+  int power = Serial.parseInt();
+  timerDewHeater = ardSecs + Serial.parseInt();
+  if (power >= 0 || power <= 255) dewHeater = power;
+}
+// 210ma at 12V needs to be delivered (maximum) for the All-Sky Cam dome.
+// dewcontrol.com heater uses 57 x 3300 ohm (332) resistors in paralled on a ring which is powered by 12V.
+// Total resistance = 57.9 ohms. A fully charged 12V 7ah would last 33 hours.
+//-------------------------------------------------------------------------------------------------
+void getBatteryVolts() {                    // v
+  float volts = measureVolts(P_BAT_V, SCALE_BATT);
+  c = '\0';
+  Serial.print(volts, 1);                                     // Needs to be in the form like 13.7V (Good)
+  if(volts < 12.1) Serial.println(F("V (Bad) "));
+  else if (volts < 12.6) Serial.println(F("V (Poor)"));
+  else Serial.println(F("V (Good)"));
 }
 //-------------------------------------------------------------------------------------------------
-bool getCloseSw() {
-  checkTimedOut();
-  return !digitalRead(P_CL_SW);
+void getSolarVolts() {                      // u
+  float volts = measureVolts(P_SOL_V, SCALE_SOLAR);
+  c = '\0';
+  Serial.print(volts, 1);                                     // Needs to be in the form like 27.7V
+  Serial.println('V');
 }
 //-------------------------------------------------------------------------------------------------
-bool checkTimedOut() {
-  if (millis() < timerLid) return false;
-  stopMotor();
+float measureVolts(int pin, float scale) {
+  return 99.9;
+  float average = 0;
+  for (byte i = 0; i < 3; i++){
+    average += analogRead(pin);
+    delay(1);
+  }
+  return average / 3 * scale;
+}
+//-------------------------------------------------------------------------------------------------
+void getAmps() {                            // a
+  // https://www.amazon.co.uk/s?k=ACS712+20A&crid=3SKQ3JVK7WWHD&sprefix=acs712+20a%2Caps%2C63&ref=nb_sb_noss
+  // AZDelivery ACS712 20A
+  // https://cdn.shopify.com/s/files/1/1509/1638/files/AZ043_A_8-6_EN_B0736DYV3W_c2659f11-4c11-4aaf-8f7e-3d84ee0c3b9a.pdf?v=1721208630
+  // SCALE_AMPS = 5A module = 185, 20A = 100, 30A = 66
+
+  float average = 0;                                  // Take an average of 100 readings to get a stable reading
+  for (byte i = 0; i < 100; i++) {
+    average += analogRead(P_AMPS);
+    delay(1);
+  }
+  average /= 100;
+  float voltage = (average / 1023.0) * 5000.0;
+  float current = (voltage - 2500.0) / SCALE_AMPS;    // 2500 may need to be changed after calibration for 0 amps
+  if (current < 0) current = 0;
+
+  c = '\0';
+  Serial.print(current * 1000.0);                     // Return milli-amps
+  Serial.println("mA");
+}
+//=================================================================================================
+#pragma endregion
+#pragma region CLOCKS AND TIMERS
+//=================================================================================================
+// CLOCKS AND TIMERS
+//=================================================================================================
+void setRPiTimers() {
+  secsRPiOn = (clockSecs() < secsPastHour) ? secsPastHour : 0;
+}
+//-------------------------------------------------------------------------------------------------
+int clockSecs() {
+  return clock.min * 60 + clock.sec;
+}
+//-------------------------------------------------------------------------------------------------
+void stillActive() {                        // ~
+  if (!poweringDown) secsRPiOff = ardSecs + 600;  // RPi is still awake and not powering down, so add a 10min buffer
+  else c = CANNOT_DO;                             // Return error code if already powering down
+}
+//-------------------------------------------------------------------------------------------------
+void goToSleep() {
+  secsRPiOff = ardSecs + Serial.parseInt();    // RPi is wanting to go to sleep in given secs.
+  poweringDown = true;
+}
+//-------------------------------------------------------------------------------------------------
+void goodNight() {
+  if (batteryStatus() == LEVEL_BLACK && !poweringDown) {
+    secsRPiOff = (clock.min + 2) % 60;
+    poweringDown = true;
+    Serial.print('0');                                  // Print an extra leading 0 - the RPi WILL be powered off
+  }
+  powerOffTimer();
+}
+//-------------------------------------------------------------------------------------------------
+void powerOffTimer() {                       // p
+  int value = secsRPiOff - clockSecs();
+  Serial.println(value + (value < 0 ? 3600 : 0));
+  c = '\0';
+}
+// ------------------------------------------------------------------------------------------------
+void dewHeaterTimer() {                        // d
+  int value = Serial.parseInt();
+  timerDewHeater = ardSecs + value;
+}
+// ------------------------------------------------------------------------------------------------
+void setCloseTimer() {
+  if (unsigned long val = Serial.parseInt() > 0) timerCloseLid = val;
+  c = '\0';
+  Serial.println(timerCloseLid);
+}
+//-------------------------------------------------------------------------------------------------
+void serviceGPS() {
+  char b;
+  while (GPSserial.available()) {
+    b = GPSserial.read();
+    if (b == '$') GPSlinePos = 0;                                   // '$' is the first character of the sentence
+    if (b >= ' ') GPSsentence[0][GPSlinePos++] = b;                 // Add a valid character to the end of the sentence
+
+    if (GPSsentence[0][0] != '$') GPSlinePos = 0;                   // Prevent a garbaged return - first character must be a "$"
+    else if (b == '\n' || GPSlinePos == 81) {                       // Valid sentence has received
+      GPSsentence[0][GPSlinePos] = '\0';
+      if (GPSsentence[0][4] == 'M') {
+        strcpy(GPSsentence[2], GPSsentence[0]);                     // Keep GPRMC sentence for printing later
+        if (GPSsentence[0][GPSlinePos-8] != ',') {                  // Look for $GPRMC,123200.00,V,,,,,,,081125,,,N*70@
+          setClocks(dd(GPSlinePos-9 , GPSlinePos-8)+2000, 
+                    dd(GPSlinePos-11, GPSlinePos-10), 
+                    dd(GPSlinePos-13, GPSlinePos-12), 
+                    dd(7, 8), dd(9, 10), dd(11, 12));               // Set clock to GPS UTC time
+        }
+      }
+      if (GPSsentence[0][4] == 'G') strcpy(GPSsentence[3], GPSsentence[0]);
+      if (GPSsentence[0][4] == 'L') strcpy(GPSsentence[4], GPSsentence[0]);
+      if (GPSsentence[0][4] == 'T') strcpy(GPSsentence[5], GPSsentence[0]);
+      strcpy(GPSsentence[1], GPSsentence[0]);
+      GPSlinePos = 0;                                                                       // Get ready to receive the next sentence
+    }
+  }
+}
+//-------------------------------------------------------------------------------------------------
+byte dd(byte a, byte b){  // Returns value of double ASCII digits
+  return (GPSsentence[0][a]) * 10 + GPSsentence[0][b] - 528;  // 528 = '0' x 10 + '0' (i.e. 48 x 11)
+}
+//-------------------------------------------------------------------------------------------------
+void setClock(){                            // Tyyyy/mm/dd hh:mm:ss
+  int clk[6];
+  for (byte i = 0; i < 6; i++) clk[i] = Serial.parseInt();
+  if (!setClocks(clk[0], clk[1], clk[2], clk[3], clk[4], clk[5])) c = CANNOT_DO;
+}
+//-------------------------------------------------------------------------------------------------
+bool setClocks(int yr, int mth, int day, int hr, int min, int sec) {
+  if (yr  > 2099 || yr  < 2025) return false;
+  if (mth > 12   || mth < 1)    return false;
+  if (day > 31   || day < 1)    return false;
+  if (hr  > 23   || hr  < 0)    return false;
+  if (min > 59   || min < 0)    return false;
+  if (sec > 59   || sec < 0)    return false;
+  if (mth == 2) if (day > 29 || (day == 29 && yr % 4 > 0)) return false;
+
+  RTC.adjust(DateTime(yr, mth, day, hr, min, sec));
+  clock.yr = yr;
+  clock.mth = mth;
+  clock.day = day;
+  clock.hr = hr;
+  clock.min = min;
+  clock.sec = sec;
+  setRPiTimers();
   return true;
 }
 //-------------------------------------------------------------------------------------------------
-void serviceMotor(){
-  if (ardClock > timerCloseLid) {
-    timerCloseLid = -1;
-    closeLid();
+void getArdTime(){                          // <
+  char buf[20];
+  sprintf(buf, "%04d/%02d/%02d %02d:%02d:%02d", clock.yr, clock.mth, clock.day, clock.hr, clock.min, int(clock.sec));
+  Serial.println(buf);
+  c = '\0';
+}
+//-------------------------------------------------------------------------------------------------
+void getRTCtime(){                          // >
+  char buf[20];
+  DateTime now = RTC.now();
+  sprintf(buf, "%04d/%02d/%02d %02d:%02d:%02d", now.year(), now.month(), now.day(), now.hour(), now.minute(), now.second());
+  Serial.println(buf);
+  c = '\0';
+}
+//-------------------------------------------------------------------------------------------------
+bool syncToRTC(){
+  if(!RTC.begin()) return false;
+  DateTime now = RTC.now();
+  clock.yr = now.year();
+  clock.mth = now.month();
+  clock.day = now.day();
+  clock.hr = now.hour();
+  clock.min = now.minute();
+  clock.sec = now.second();
+  tick = millis() + 1000;
+  setRPiTimers();
+  return true;
+}
+//-------------------------------------------------------------------------------------------------
+void handBoxUTC (){
+  if (handBoxInUse > 2) { // Wait a bit before starting to show UTC time
+    handBoxInUse--;
     return;
   }
-  if (checkTimedOut()) return;
-  digitalWrite(P_MTR_PWM, dir);
-  if (pwm) {
-    if (dir) {
-      detachInterrupt(digitalPinToInterrupt(P_OP_SW));                    // Reset interrupt for open switch
-      attachInterrupt(digitalPinToInterrupt(P_CL_SW), stopMotor, LOW);    // Set up interrupt for closed switch
-      if (!getCloseSw()){                                                 // Stop motor if closed
-        stopMotor();
-        return;
-      }
-    }
-    else {
-      detachInterrupt(digitalPinToInterrupt(P_CL_SW));                    // Reset interrupt for closed switch
-      attachInterrupt(digitalPinToInterrupt(P_OP_SW), stopMotor, LOW);  // Set up interrupt for open switch
-      if (!getOpenSw()){                                                  // Stop motor if open
-        stopMotor();
-        return;
-      }
-    }
+  memcpy(disp0, "Waiting for RPi ", 16);
+  sprintf(disp1, " UTC: %02d:%02d:%02d  ", clock.hr, clock.min, int(clock.sec));
+  printLCDbuffer();
+}
+//-------------------------------------------------------------------------------------------------
+void tickTock(){
+  if (tick < 1000 && millis() > 0x7fffffff) return; // Account for the ~49 day millis() overflow back to 0.
+  if (tick > millis()) return;                      // Return if the tock hasn't ticked yet
+  updateClock();
+  handBoxUTC();
+
+// Turn on RPi?
+  if ((clockSecs() >= secsRPiOn) && (clockSecs() <= (secsRPiOn + ee.secsStayAwake))) {
+    if (!RPiPowerOn) secsRPiOff = ardSecs + 600;    // Set power off timeout (in 10 mins) when power just come on.
+    digitalWrite(P_RPI_PWR, RPiPowerOn = HIGH);     // Good morning RPi
+  }
+
+// Turn off RPi?
+  if (ardSecs > secsRPiOff) {
+    digitalWrite(P_RPI_PWR, RPiPowerOn =LOW);       // Good night RPi
+    digitalWrite(P_LED, LOW);                       // LEDs are not needed
+    digitalWrite(P_CAM_HTR, LOW);                   // Skycam heater is not needed
   }
 }
 //-------------------------------------------------------------------------------------------------
-void setMotorTimeOut(){                          // Mx
-  delay(20);                                // Wait a little for next character
-  switch (Serial.peek()) {
-    case '\r':                              // No parameter given so the current servoAnlge will be return
-      break;
-    case '\n':
-      break;
-    case '\0':
-      break;
-    default:
-      unsigned long getTimeOut = Serial.parseInt();
-      if (getTimeOut > 60000 || getTimeOut < 0){
-        c = CANNOT_DO;
-        return;
-      };
-      ee.lidTimeOut = getTimeOut;
-      Serial.print(ee.lidTimeOut);
-    break;
+void updateClock() {
+//  clock.sec += (millis() - tick) / 1000 + 1;
+  tick += 1000;
+  ardSecs++;
+  clock.sec++;
+  if (clock.sec < 60) return;
+
+  if (measureVolts(P_BAT_V, SCALE_BATT) < LEVEL_BLACK) { // Battery is in dire straits.
+    beep(50);                                               // Cry for help once a minute
+    delay(50);
+    beep(50);
   }
-  c = '\0';
-  return;
-}
-//-------------------------------------------------------------------------------------------------
-void stopMotor(){                                // X     ***This is also used as an Interrupt Service Routine***
-// Either the open or closed switched, or the motor button has been pressed
-  noInterrupts();
-  digitalWrite(P_MTR_PWM, pwm = 0);                       // Stop the motor, pwm = 0 means motor has stopped
-  detachInterrupt(digitalPinToInterrupt(P_OP_SW));        // Reset interrupt for closed switch
-  detachInterrupt(digitalPinToInterrupt(P_CL_SW));        // Reset interrupt for open switch
-  interrupts();
-  timerLid = 0;                                           // Stop time-out timer
-}
-//-------------------------------------------------------------------------------------------------
-void nudgeLid() {                                // Nx     (-x = close lid for x ms, x = open lid for x ms)
-  int value;
-  if ((value = Serial.parseInt()) == 0) return;
-  digitalWrite(P_MTR_DIR, value > 0 ? LOW: HIGH);
-  if (value < 0) value = -value;
-  noInterrupts();
-  analogWrite(P_MTR_PWM, 255);
-  delay(value);
-  analogWrite(P_MTR_PWM, 0);
-  interrupts();
+  if (syncToRTC()) return;
+
+// If we have got to this point, we are relying on the Arduino to keep track of time
+  clock.sec -= 60;
+  if (++clock.min < 60) return;
+  clock.min -= 60;
+  if (++clock.hr < 24) return; 
+  clock.hr -= 24;
+  if (++clock.day < 29) return;
+  if (clock.mth == 2) if(clock.yr % 4 == 0 && clock.day == 29) return;
+  if (clock.day == 30) if (clock.mth == 4 || clock.mth == 6 || clock.mth == 9 || clock.mth == 11) return;
+  if (clock.day == 31) return;
+  clock.day = 1;
+  if (++clock.mth < 13) return;
+  clock.mth = 1;
+  clock.yr++;
 }
 //=================================================================================================
 #pragma endregion
@@ -911,8 +923,8 @@ bool checkHandBox() {
   //c = '1';                                          // ***REMOVE WHEN GOING LIVE***
   //return handBoxHere = true;                        // ***REMOVE WHEN GOING LIVE***
 
-  if (handBoxHere) timerHandBox = ardClock+ 300;      // Update disconnection timer (5 mins)
-  else if (ardClock > timerHandBox) timerHandBox = 0; // If disconnect for more than 5 mins the handbox is reset
+  if (handBoxHere) timerHandBox = ardSecs+ 300;       // Update disconnection timer (5 mins)
+  else if (ardSecs > timerHandBox) timerHandBox = 0;  // If disconnect for more than 5 mins the handbox is reset
 
   if (digitalRead(P_HBX_CXN) == handBoxHere) {        // Connection status changed?
     handBoxHere = false;                              // Assume connection is lost
@@ -941,16 +953,17 @@ void connectHandBox(){
     memcpy(disp0, "  CrayStation   ", 16);
     memcpy(disp1, VERSION, 16);  
   }
-  lcd.begin(LCD_WIDTH, LCD_HEIGHT);
+  lcd.begin(LCD_WIDTH, LCD_HEIGHT);             // 16 columns by 2 rows
 
   if (handBox.begin(0x20, &Wire)) {
-    handBox.pinMode(E_KEY_U,      INPUT_PULLUP);
+    for (byte i = 1; i < 7; i++) handBox.pinMode(i, INPUT_PULLUP);
+/*  handBox.pinMode(E_KEY_U,      INPUT_PULLUP);
     handBox.pinMode(E_KEY_D,      INPUT_PULLUP);
     handBox.pinMode(E_KEY_L,      INPUT_PULLUP);
     handBox.pinMode(E_KEY_R,      INPUT_PULLUP);
     handBox.pinMode(E_KEY_ENTER,  INPUT_PULLUP);
     handBox.pinMode(E_KEY_BACK,   INPUT_PULLUP);
-    handBox.pinMode(E_BUZZER,     OUTPUT);
+    handBox.pinMode(E_BUZZER,     OUTPUT);*/
   }
   else {
     memcpy(disp0, "*PCF2875 failed*", 16);
@@ -959,7 +972,7 @@ void connectHandBox(){
 
   // Power up the RPi if it is not already on
   if (battLevel > LEVEL_BLACK) {
-    digitalWrite(P_RPI_PWR, HIGH);
+    digitalWrite(P_RPI_PWR, RPiPowerOn = HIGH);
     poweringDown = false;
     setRPiTimers();
   }
@@ -981,7 +994,7 @@ void connectHandBox(){
 //-------------------------------------------------------------------------------------------------
 void handboxChargingStatus(){
   if (checkHandBox()) {
-    float v = measureVolts(BATT_V, SCALE_BATT, 20);
+    float v = measureVolts(P_BAT_V, SCALE_BATT);
     int percent = int((v - 11.37) / 0.013556);
     if (percent < 0) percent = 0;
     if (percent > 100) percent = 100;
@@ -1003,7 +1016,6 @@ void printLCDbuffer() {
 }
 //-------------------------------------------------------------------------------------------------
 void setCursor(){
-  if (handBoxInUse) clearLCD();
   if (gettingPwd) {
     c = CANNOT_DO;
     return;
@@ -1015,8 +1027,6 @@ void setCursor(){
 }
 //-------------------------------------------------------------------------------------------------
 void printChar(char chr){
-  if (handBoxInUse != 0) clearLCD();                              // 0 means in use
-
   if (x < LCD_WIDTH &&  y < LCD_HEIGHT) {
     y == 0 ? disp0[x] = chr : disp1[x] = chr;
     lcd.write(chr);
@@ -1037,6 +1047,8 @@ void clearLCD(){
 //-------------------------------------------------------------------------------------------------
 void enterPassword() {
   int pwdPos = 0;
+
+  if (handBoxInUse) clearLCD();
   if (!handBoxHere) {
     gettingPwd = false;
     c = CANNOT_DO;
@@ -1163,10 +1175,6 @@ void getPassword() {
   Serial.println(pwd);
 }
 //-------------------------------------------------------------------------------------------------
-void soundBuzzer() {
-  if (int b = Serial.parseInt() > 0) beep(b);
-}
-//-------------------------------------------------------------------------------------------------
 void beep(int b){
 //  handBox.begin(0x20, &Wire);
 //  handBox.pinMode(E_BUZZER, OUTPUT);              // Start hanbox buzzer if connected
@@ -1182,20 +1190,6 @@ void beep(int b){
 //=================================================================================================
 // MISCELLANEOUS
 //=================================================================================================
-void serviceGPS() {
-  char b;
-  while (GPSserial.available()) {
-    b = GPSserial.read();
-    if (b == '$') GPSlinePos = 0;
-    if (b >= ' ') GPSsentence[GPSline][GPSlinePos++] = b;
-    if (b == '\n' || GPSlinePos == 81) {
-      GPSsentence[GPSline][GPSlinePos] = '0';
-      GPSline = !GPSline;
-      GPSlinePos = 0;
-    }
-  }
-}
-//-------------------------------------------------------------------------------------------------
 void systemStatus(){
   Serial.println(F("\nNANO"));
   for (byte i = 0 ; i <= A7; i++){
@@ -1221,7 +1215,7 @@ void systemStatus(){
       case 11: Serial.print(F(">SRV_SIG")); break;
       case 12: Serial.print(F("<RAIN_SIG")); break;
       case 13: Serial.print(F(">LED_PWR")); break;
-      case A0: Serial.print(F(">GPS PWR")); break;
+      case A0: Serial.print(F("<GPS PWR")); break;
       case A1: Serial.print(F(">BUZZER")); break;
       case A2: Serial.print(F("<AMPS")); break;
       case A3: Serial.print(F("<HBX_CXN")); break;
@@ -1245,8 +1239,7 @@ void systemStatus(){
     Serial.print(F("C\nRTC Time\t"));   getRTCtime();
   } else (Serial.println(F("No DM3231M")));
 
-  Serial.print(F("Last GPS\t"));
-  Serial.println(GPSsentence[GPSline]);
+  Serial.print(F("Last GPS\t"));        Serial.println(GPSsentence[1]);
 
   Serial.println(F("\nSETTINGS"));
   Serial.print(F("Srv home angle\t"));  Serial.println(ee.servoHome);
@@ -1309,9 +1302,7 @@ void systemStatus(){
     }
     Serial.println();
   }
-
-  Serial.println(F("END"));
-  c='\0';
+  c='|';
 }
 //-------------------------------------------------------------------------------------------------
 void restart() {
@@ -1384,11 +1375,11 @@ SPARE D9 receives GPS module's data output.
   starting from the key notch.
 
   HBX Handbox
-      1 CXN (Be)  Plug connects this pin to ground to indicate handbox is connected
-      2 SCL (Y)
-      3 SDA (W)
-      4 5V  (R)
-      5 GND (Bk)
+W     1 CXN (Be)  Plug connects this pin to ground to indicate handbox is connected
+Gy    2 SCL (Y)
+Pe    3 SDA (W)
+Be    4 5V  (R)
+Gn    5 GND (Bk)
 
   MAN Manual controller
     A DPDT 3 postion latching switch in a small handheld box, when connected bypasses electronics
@@ -1436,5 +1427,14 @@ SPARE D9 receives GPS module's data output.
       2 CLS
       3 M1
       4 M2
-*/
+
+  GPS PVTRGE
+    P - Pulse       Bk  n.c.
+    V - Vcc         Wh  +5V
+    T - TX          Gn  D9
+    R - RX          R   n.c.
+    G - GND         Y   A0 (set LOW)
+    E - Enable      Be  n.c.
+
+      */
 #pragma endregion
